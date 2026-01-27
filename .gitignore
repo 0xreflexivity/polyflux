@@ -7,3 +7,5 @@ typechain-types/
 coverage/
 dist/
 .DS_Store
+typechain-types/
+frontend/dist/
