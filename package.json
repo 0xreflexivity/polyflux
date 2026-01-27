@@ -1,0 +1,19 @@
+{
+  "name": "flux",
+  "version": "1.0.0",
+  "description": "Prediction market derivatives on Flare Network",
+  "scripts": {
+    "compile": "hardhat compile",
+    "test": "hardhat test",
+    "deploy": "hardhat run scripts/deploy.ts"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox": "^4.0.0",
+    "@openzeppelin/contracts": "^5.0.0",
+    "hardhat": "^2.19.0",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@flarenetwork/flare-periphery-contracts": "^0.1.0"
+  }
+}
