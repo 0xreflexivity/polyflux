@@ -1,10 +1,10 @@
 import { run, web3 } from "hardhat";
-import { PredictionMarketOracleInstance } from "../../typechain-types";
+import { PredictionMarketOracleInstance } from "../typechain-types";
 import {
     prepareAttestationRequestBase,
     submitAttestationRequest,
     retrieveDataAndProofBaseWithRetry,
-} from "../utils/fdc";
+} from "./utils/fdc";
 
 const PredictionMarketOracle = artifacts.require("PredictionMarketOracle");
 

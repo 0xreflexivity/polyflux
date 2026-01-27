@@ -41,23 +41,6 @@ struct Position {
     bool isOpen;
 }
 
-/// @notice Emitted when a position is opened
-event PositionOpened(
-    uint256 indexed positionId,
-    address indexed owner,
-    string marketId,
-    Direction direction,
-    uint256 collateral,
-    uint256 leverage,
-    uint256 entryPrice
-);
-
-/// @notice Emitted when a position is closed
-event PositionClosed(uint256 indexed positionId, address indexed owner, uint256 exitPrice, int256 pnl);
-
-/// @notice Emitted when a position is liquidated
-event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 exitPrice);
-
 /**
  * @title IPredictionDerivatives
  * @notice Interface for prediction derivatives
@@ -83,6 +66,33 @@ interface IPredictionDerivatives {
  */
 contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
     using SafeERC20 for IERC20;
+
+    // ============ EVENTS ============
+
+    /// @notice Emitted when a position is opened
+    event PositionOpened(
+        uint256 indexed positionId,
+        address indexed owner,
+        string marketId,
+        Direction direction,
+        uint256 collateral,
+        uint256 leverage,
+        uint256 entryPrice
+    );
+
+    /// @notice Emitted when a position is closed
+    event PositionClosed(uint256 indexed positionId, address indexed owner, uint256 exitPrice, int256 pnl);
+
+    /// @notice Emitted when a position is liquidated
+    event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 exitPrice);
+
+    /// @notice Emitted when ownership is transferred
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    /// @notice Emitted when fee recipient is changed
+    event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
+
+    // ============ CONSTANTS ============
 
     /// @notice Basis points denominator (100% = 10000)
     uint256 public constant BPS = 10000;
@@ -362,7 +372,9 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      */
     function setFeeRecipient(address newRecipient) external onlyOwner {
         require(newRecipient != address(0), "Invalid address");
+        address oldRecipient = feeRecipient;
         feeRecipient = newRecipient;
+        emit FeeRecipientUpdated(oldRecipient, newRecipient);
     }
 
     /**
@@ -371,7 +383,9 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      */
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Invalid address");
+        address oldOwner = owner;
         owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
     }
 
     /**

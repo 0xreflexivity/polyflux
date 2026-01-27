@@ -38,15 +38,6 @@ struct MarketDTO {
     uint256 liquidity;
 }
 
-/// @notice Emitted when new market data is stored
-event MarketDataUpdated(string indexed marketId, uint256 yesPrice, uint256 noPrice, uint256 volume, uint256 timestamp);
-
-/// @notice Emitted when a market is added to the whitelist
-event MarketWhitelisted(string indexed marketId);
-
-/// @notice Emitted when a market is removed from the whitelist
-event MarketDelisted(string indexed marketId);
-
 /**
  * @title IPredictionMarketOracle
  * @notice Interface for the prediction market oracle
@@ -63,6 +54,22 @@ interface IPredictionMarketOracle {
  * @notice Oracle contract that stores verified prediction market data from Polymarket
  */
 contract PredictionMarketOracle is IPredictionMarketOracle {
+    // ============ EVENTS ============
+
+    /// @notice Emitted when new market data is stored
+    event MarketDataUpdated(string indexed marketId, uint256 yesPrice, uint256 noPrice, uint256 volume, uint256 timestamp);
+
+    /// @notice Emitted when a market is added to the whitelist
+    event MarketWhitelisted(string indexed marketId);
+
+    /// @notice Emitted when a market is removed from the whitelist
+    event MarketDelisted(string indexed marketId);
+
+    /// @notice Emitted when ownership is transferred
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    // ============ CONSTANTS ============
+
     /// @notice Maximum allowed price in basis points (100%)
     uint256 public constant MAX_PRICE_BPS = 10000;
 
@@ -211,7 +218,9 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
      */
     function transferOwnership(address newOwner) external onlyOwner {
         require(newOwner != address(0), "Invalid address");
+        address oldOwner = owner;
         owner = newOwner;
+        emit OwnershipTransferred(oldOwner, newOwner);
     }
 
     /**
