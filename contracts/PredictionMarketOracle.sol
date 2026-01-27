@@ -224,6 +224,55 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
     }
 
     /**
+     * @notice TESTNET ONLY: Set market data directly without FDC proof
+     * @dev This function should be removed or disabled before mainnet deployment
+     * @param marketId The market identifier
+     * @param question The prediction question
+     * @param yesPrice YES price in basis points (0-10000)
+     * @param noPrice NO price in basis points (0-10000)
+     * @param volume Total volume in USD (scaled by 1e6)
+     * @param liquidity Current liquidity in USD (scaled by 1e6)
+     */
+    function setMarketDataForTesting(
+        string calldata marketId,
+        string calldata question,
+        uint256 yesPrice,
+        uint256 noPrice,
+        uint256 volume,
+        uint256 liquidity
+    ) external onlyOwner {
+        // Validate the data
+        MarketDTO memory dto = MarketDTO({
+            marketId: marketId,
+            question: question,
+            yesPrice: yesPrice,
+            noPrice: noPrice,
+            volume: volume,
+            liquidity: liquidity
+        });
+        _validateMarketData(dto);
+
+        // Store the market data
+        markets[marketId] = MarketData({
+            marketId: marketId,
+            question: question,
+            yesPrice: yesPrice,
+            noPrice: noPrice,
+            volume: volume,
+            liquidity: liquidity,
+            timestamp: block.timestamp
+        });
+
+        // Track new markets
+        if (!marketExists[marketId]) {
+            marketIds.push(marketId);
+            marketExists[marketId] = true;
+        }
+
+        emit MarketDataUpdated(marketId, yesPrice, noPrice, volume, block.timestamp);
+    }
+
+    /**
      * @notice Validate market data for safety
      * @param dto The market data to validate
      */
