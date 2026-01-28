@@ -1,0 +1,30 @@
+{
+    "name": "polyflux-keeper",
+    "version": "1.0.0",
+    "description": "POLYFLUX FDC Keeper - Permissionless oracle updates via Flare Data Connector",
+    "main": "dist/fdc-keeper.js",
+    "scripts": {
+        "build": "tsc",
+        "start": "node dist/fdc-keeper.js",
+        "dev": "ts-node src/fdc-keeper.ts",
+        "fdc": "ts-node src/fdc-keeper.ts",
+        "lint:check": "eslint \"src/**/*.ts\"",
+        "lint:fix": "eslint \"src/**/*.ts\" --fix",
+        "format:check": "prettier --check \"src/**/*.ts\"",
+        "format:fix": "prettier --write \"src/**/*.ts\""
+    },
+    "dependencies": {
+        "dotenv": "^17.2.3",
+        "ethers": "^6.14.0"
+    },
+    "devDependencies": {
+        "@types/node": "^22.0.0",
+        "@typescript-eslint/eslint-plugin": "^8.30.0",
+        "@typescript-eslint/parser": "^8.30.0",
+        "eslint": "^9.24.0",
+        "eslint-config-prettier": "^10.1.2",
+        "prettier": "^3.2.5",
+        "ts-node": "^10.9.2",
+        "typescript": "^5.0.0"
+    }
+}
