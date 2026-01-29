@@ -31,7 +31,8 @@ async function fetchMarketsFromPolymarket(): Promise<PolymarketMarket[]> {
             continue;
         }
 
-        const markets = await response.json();
+        const body = await response.json();
+        const markets = Array.isArray(body) ? body : (body.data ?? []);
         allMarkets.push(...markets);
     }
 
@@ -78,8 +79,8 @@ async function main() {
         try {
             const prices = JSON.parse(m.outcomePrices);
             if (prices.length < 2) return false;
-            // Lower threshold to get more markets
-            if (m.liquidityNum < 100) return false;
+            // Must match contract's MIN_LIQUIDITY ($1000 scaled by 1e6)
+            if (m.liquidityNum < 1000) return false;
             return true;
         } catch {
             return false;
@@ -95,19 +96,34 @@ async function main() {
     for (const market of validMarkets) {
         try {
             const prices = JSON.parse(market.outcomePrices);
-            const yesPrice = Math.floor(parseFloat(prices[0]) * 10000); // Convert to basis points
-            const noPrice = Math.floor(parseFloat(prices[1]) * 10000);
-            const volume = BigInt(Math.floor(market.volumeNum * 1e6));
-            const liquidity = BigInt(Math.floor(market.liquidityNum * 1e6));
+            const yesPriceRaw = parseFloat(prices[0]);
+            const noPriceRaw = parseFloat(prices[1]);
+            const volumeRaw = market.volumeNum;
+            const liquidityRaw = market.liquidityNum;
+
+            // Skip if any values are NaN/invalid
+            if (isNaN(yesPriceRaw) || isNaN(noPriceRaw) || !Number.isFinite(volumeRaw) || !Number.isFinite(liquidityRaw)) {
+                console.log(`⏭️  Skipping ${market.slug}: invalid price/volume data`);
+                continue;
+            }
+
+            const yesPrice = Math.floor(yesPriceRaw * 10000); // Convert to basis points
+            const noPrice = Math.floor(noPriceRaw * 10000);
+            const volume = BigInt(Math.floor(volumeRaw * 1e6));
+            const liquidity = BigInt(Math.floor(liquidityRaw * 1e6));
 
             // Always update to refresh timestamp (required for freshness check)
 
             console.log(`📝 Setting data for: ${market.slug}`);
             console.log(`   Question: ${market.question.substring(0, 60)}...`);
             console.log(
-                `   YES: ${yesPrice / 100}%, NO: ${noPrice / 100}%, Vol: $${market.volumeNum.toLocaleString()}`
+                `   YES: ${yesPrice} bps, NO: ${noPrice} bps, Sum: ${yesPrice + noPrice}`
+            );
+            console.log(
+                `   Vol: ${volume.toString()}, Liq: ${liquidity.toString()} (raw: $${liquidityRaw.toLocaleString()})`
             );
 
+            // Skip gas estimation and use fixed gas
             const tx = await oracle.setMarketDataForTesting(
                 market.slug,
                 market.question,
@@ -115,17 +131,44 @@ async function main() {
                 noPrice,
                 volume.toString(),
                 liquidity.toString(),
-                { from: signer }
+                { from: signer, gas: 500000 }
             );
 
             console.log(`   TX: ${tx.tx}`);
             console.log(`   ✅ Confirmed!\n`);
             successCount++;
 
-            // Small delay to avoid rate limiting
-            await new Promise((r) => setTimeout(r, 500));
-        } catch (err) {
-            console.error(`   ❌ Error: ${err instanceof Error ? err.message : "Unknown error"}\n`);
+            // Delay between TXs to avoid RPC rate limits
+            await new Promise((r) => setTimeout(r, 3000));
+        } catch (err: any) {
+            const isRateLimit = err.message?.includes("Too Many Requests");
+            console.error(`   ❌ Error: ${err.message}`);
+            if (err.reason) console.error(`   Reason: ${err.reason}`);
+            
+            if (isRateLimit) {
+                console.log(`   ⏳ Rate limited — backing off 30s then retrying...`);
+                await new Promise((r) => setTimeout(r, 30000));
+                // Retry once
+                try {
+                    const retryTx = await oracle.setMarketDataForTesting(
+                        market.slug,
+                        market.question,
+                        Math.floor(parseFloat(JSON.parse(market.outcomePrices)[0]) * 10000),
+                        Math.floor(parseFloat(JSON.parse(market.outcomePrices)[1]) * 10000),
+                        BigInt(Math.floor(market.volumeNum * 1e6)).toString(),
+                        BigInt(Math.floor(market.liquidityNum * 1e6)).toString(),
+                        { from: signer, gas: 500000 }
+                    );
+                    console.log(`   TX (retry): ${retryTx.tx}`);
+                    console.log(`   ✅ Confirmed on retry!\n`);
+                    successCount++;
+                    await new Promise((r) => setTimeout(r, 5000));
+                    continue;
+                } catch (retryErr: any) {
+                    console.error(`   ❌ Retry also failed: ${retryErr.message}\n`);
+                }
+            }
+            
             errorCount++;
         }
     }
