@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import { ContractRegistry } from "@flarenetwork/flare-periphery-contracts/coston2/ContractRegistry.sol";
-import { IWeb2Json } from "@flarenetwork/flare-periphery-contracts/coston2/IWeb2Json.sol";
-import { IFdcVerification } from "@flarenetwork/flare-periphery-contracts/coston2/IFdcVerification.sol";
+import {ContractRegistry} from "@flarenetwork/flare-periphery-contracts/coston2/ContractRegistry.sol";
+import {IWeb2Json} from "@flarenetwork/flare-periphery-contracts/coston2/IWeb2Json.sol";
+import {IFdcVerification} from "@flarenetwork/flare-periphery-contracts/coston2/IFdcVerification.sol";
 
 /**
  * @title PredictionMarketOracle
  * @notice Fetches prediction market data from Polymarket via FDC Web2Json attestations
  * @dev Uses Flare Data Connector to bring off-chain prediction market data on-chain
  *
- * Security considerations (Trail of Bits):
+ * Security features:
  * - All external data must be verified via FDC proof
  * - Price data is bounded to prevent manipulation
  * - Staleness checks prevent use of outdated data
@@ -26,6 +26,9 @@ struct MarketData {
     uint256 volume; // Total volume in USD (scaled by 1e6)
     uint256 liquidity; // Current liquidity in USD (scaled by 1e6)
     uint256 timestamp; // When this data was fetched
+    uint256 endDate; // Market end/resolution date (unix timestamp)
+    bool resolved; // Whether the market has been resolved
+    bool outcome; // True = YES won, False = NO won (only valid if resolved)
 }
 
 /// @notice Data transport object matching the JQ transformation output
@@ -44,9 +47,25 @@ struct MarketDTO {
  */
 interface IPredictionMarketOracle {
     function updateMarketData(IWeb2Json.Proof calldata proof) external;
-    function getMarketData(string calldata marketId) external view returns (MarketData memory);
-    function getLatestPrice(string calldata marketId) external view returns (uint256 yesPrice, uint256 noPrice);
-    function isMarketDataFresh(string calldata marketId, uint256 maxAge) external view returns (bool);
+    function getMarketData(
+        string calldata marketId
+    ) external view returns (MarketData memory);
+    function getLatestPrice(
+        string calldata marketId
+    ) external view returns (uint256 yesPrice, uint256 noPrice);
+    function isMarketDataFresh(
+        string calldata marketId,
+        uint256 maxAge
+    ) external view returns (bool);
+    function isMarketResolved(
+        string calldata marketId
+    ) external view returns (bool);
+    function getMarketOutcome(
+        string calldata marketId
+    ) external view returns (bool resolved, bool outcome);
+    function getMarketEndDate(
+        string calldata marketId
+    ) external view returns (uint256);
 }
 
 /**
@@ -57,7 +76,13 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
     // ============ EVENTS ============
 
     /// @notice Emitted when new market data is stored
-    event MarketDataUpdated(string indexed marketId, uint256 yesPrice, uint256 noPrice, uint256 volume, uint256 timestamp);
+    event MarketDataUpdated(
+        string indexed marketId,
+        uint256 yesPrice,
+        uint256 noPrice,
+        uint256 volume,
+        uint256 timestamp
+    );
 
     /// @notice Emitted when a market is added to the whitelist
     event MarketWhitelisted(string indexed marketId);
@@ -66,7 +91,18 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
     event MarketDelisted(string indexed marketId);
 
     /// @notice Emitted when ownership is transferred
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
+
+    /// @notice Emitted when a market is resolved
+    event MarketResolved(
+        string indexed marketId,
+        bool outcome,
+        uint256 finalYesPrice,
+        uint256 finalNoPrice
+    );
 
     // ============ CONSTANTS ============
 
@@ -110,12 +146,17 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
      * @param proof The FDC Web2Json proof containing market data
      * @dev The proof must be valid and the market must pass all safety checks
      */
-    function updateMarketData(IWeb2Json.Proof calldata proof) external override {
+    function updateMarketData(
+        IWeb2Json.Proof calldata proof
+    ) external override {
         // 1. Verify the FDC proof
         require(_isWeb2JsonProofValid(proof), "Invalid FDC proof");
 
         // 2. Decode the ABI-encoded data from the proof
-        MarketDTO memory dto = abi.decode(proof.data.responseBody.abiEncodedData, (MarketDTO));
+        MarketDTO memory dto = abi.decode(
+            proof.data.responseBody.abiEncodedData,
+            (MarketDTO)
+        );
 
         // 3. Validate the data
         _validateMarketData(dto);
@@ -128,7 +169,10 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
             noPrice: dto.noPrice,
             volume: dto.volume,
             liquidity: dto.liquidity,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            endDate: 0, // Will be set separately via setMarketEndDate
+            resolved: false,
+            outcome: false
         });
 
         markets[dto.marketId] = newData;
@@ -139,7 +183,13 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
             marketExists[dto.marketId] = true;
         }
 
-        emit MarketDataUpdated(dto.marketId, dto.yesPrice, dto.noPrice, dto.volume, block.timestamp);
+        emit MarketDataUpdated(
+            dto.marketId,
+            dto.yesPrice,
+            dto.noPrice,
+            dto.volume,
+            block.timestamp
+        );
     }
 
     /**
@@ -147,7 +197,9 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
      * @param marketId The Polymarket market ID
      * @return The market data struct
      */
-    function getMarketData(string calldata marketId) external view override returns (MarketData memory) {
+    function getMarketData(
+        string calldata marketId
+    ) external view override returns (MarketData memory) {
         require(markets[marketId].timestamp > 0, "Market not found");
         return markets[marketId];
     }
@@ -172,7 +224,10 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
      * @param maxAge Maximum allowed age in seconds
      * @return True if the data is fresh
      */
-    function isMarketDataFresh(string calldata marketId, uint256 maxAge) external view override returns (bool) {
+    function isMarketDataFresh(
+        string calldata marketId,
+        uint256 maxAge
+    ) external view override returns (bool) {
         MarketData memory data = markets[marketId];
         if (data.timestamp == 0) return false;
         return (block.timestamp - data.timestamp) <= maxAge;
@@ -224,6 +279,83 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
     }
 
     /**
+     * @notice Mark a market as resolved with final outcome
+     * @param marketId The market ID to resolve
+     * @param outcome True if YES won, False if NO won
+     * @dev In production, this should be triggered by FDC proof of resolution
+     */
+    function resolveMarket(
+        string calldata marketId,
+        bool outcome
+    ) external onlyOwner {
+        MarketData storage data = markets[marketId];
+        require(data.timestamp > 0, "Market not found");
+        require(!data.resolved, "Already resolved");
+
+        data.resolved = true;
+        data.outcome = outcome;
+
+        // Set final prices (winner = 100%, loser = 0%)
+        if (outcome) {
+            data.yesPrice = MAX_PRICE_BPS; // 100%
+            data.noPrice = 0;
+        } else {
+            data.yesPrice = 0;
+            data.noPrice = MAX_PRICE_BPS; // 100%
+        }
+
+        emit MarketResolved(marketId, outcome, data.yesPrice, data.noPrice);
+    }
+
+    /**
+     * @notice Check if a market has been resolved
+     * @param marketId The market ID
+     * @return True if resolved
+     */
+    function isMarketResolved(
+        string calldata marketId
+    ) external view override returns (bool) {
+        return markets[marketId].resolved;
+    }
+
+    /**
+     * @notice Get the resolution outcome of a market
+     * @param marketId The market ID
+     * @return resolved Whether the market is resolved
+     * @return outcome The outcome (true = YES won) - only valid if resolved
+     */
+    function getMarketOutcome(
+        string calldata marketId
+    ) external view override returns (bool resolved, bool outcome) {
+        MarketData memory data = markets[marketId];
+        return (data.resolved, data.outcome);
+    }
+
+    /**
+     * @notice Get the end date of a market
+     * @param marketId The market ID
+     * @return The end date as unix timestamp (0 if not set)
+     */
+    function getMarketEndDate(
+        string calldata marketId
+    ) external view override returns (uint256) {
+        return markets[marketId].endDate;
+    }
+
+    /**
+     * @notice Set market end date
+     * @param marketId The market ID
+     * @param endDate The end date as unix timestamp
+     */
+    function setMarketEndDate(
+        string calldata marketId,
+        uint256 endDate
+    ) external onlyOwner {
+        require(markets[marketId].timestamp > 0, "Market not found");
+        markets[marketId].endDate = endDate;
+    }
+
+    /**
      * @notice TESTNET ONLY: Set market data directly without FDC proof
      * @dev This function should be removed or disabled before mainnet deployment
      * @param marketId The market identifier
@@ -260,7 +392,10 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
             noPrice: noPrice,
             volume: volume,
             liquidity: liquidity,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            endDate: 0,
+            resolved: false,
+            outcome: false
         });
 
         // Track new markets
@@ -269,7 +404,13 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
             marketExists[marketId] = true;
         }
 
-        emit MarketDataUpdated(marketId, yesPrice, noPrice, volume, block.timestamp);
+        emit MarketDataUpdated(
+            marketId,
+            yesPrice,
+            noPrice,
+            volume,
+            block.timestamp
+        );
     }
 
     /**
@@ -283,7 +424,10 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
 
         // YES + NO should approximately equal 100% (allow 5% tolerance for spread)
         uint256 totalPrice = dto.yesPrice + dto.noPrice;
-        require(totalPrice >= 9500 && totalPrice <= 10500, "Price sum out of range");
+        require(
+            totalPrice >= 9500 && totalPrice <= 10500,
+            "Price sum out of range"
+        );
 
         // Minimum liquidity check to prevent low-liquidity manipulation
         require(dto.liquidity >= MIN_LIQUIDITY, "Insufficient liquidity");
@@ -294,7 +438,9 @@ contract PredictionMarketOracle is IPredictionMarketOracle {
      * @param proof The proof to verify
      * @return True if valid
      */
-    function _isWeb2JsonProofValid(IWeb2Json.Proof calldata proof) internal view returns (bool) {
+    function _isWeb2JsonProofValid(
+        IWeb2Json.Proof calldata proof
+    ) internal view returns (bool) {
         IFdcVerification fdc = ContractRegistry.getFdcVerification();
         return fdc.verifyWeb2Json(proof);
     }

@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.25;
 
-import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import { IPredictionMarketOracle } from "./PredictionMarketOracle.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import {IPredictionMarketOracle} from "./PredictionMarketOracle.sol";
 
 /**
  * @title PredictionDerivatives
  * @notice Create leveraged positions on prediction market outcomes using Flare's FDC
  * @dev Enables users to go long/short on Polymarket outcomes with leverage
  *
- * Security considerations (Trail of Bits):
+ * Security features:
  * - Reentrancy protection on all state-changing functions
  * - Proper decimal handling for price calculations
  * - Maximum leverage caps to prevent excessive risk
@@ -39,6 +39,7 @@ struct Position {
     uint256 size; // Position size = collateral * leverage
     uint256 openTimestamp;
     bool isOpen;
+    bool settled; // Whether position was auto-settled on market resolution
 }
 
 /**
@@ -55,9 +56,19 @@ interface IPredictionDerivatives {
 
     function closePosition(uint256 positionId) external returns (int256 pnl);
     function liquidatePosition(uint256 positionId) external;
-    function getPosition(uint256 positionId) external view returns (Position memory);
-    function calculatePnL(uint256 positionId) external view returns (int256 pnl);
+    function settlePosition(uint256 positionId) external;
+    function settleMarketPositions(
+        string calldata marketId,
+        uint256 maxPositions
+    ) external returns (uint256 settledCount);
+    function getPosition(
+        uint256 positionId
+    ) external view returns (Position memory);
+    function calculatePnL(
+        uint256 positionId
+    ) external view returns (int256 pnl);
     function isLiquidatable(uint256 positionId) external view returns (bool);
+    function isSettleable(uint256 positionId) external view returns (bool);
 }
 
 /**
@@ -81,16 +92,39 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
     );
 
     /// @notice Emitted when a position is closed
-    event PositionClosed(uint256 indexed positionId, address indexed owner, uint256 exitPrice, int256 pnl);
+    event PositionClosed(
+        uint256 indexed positionId,
+        address indexed owner,
+        uint256 exitPrice,
+        int256 pnl
+    );
 
     /// @notice Emitted when a position is liquidated
-    event PositionLiquidated(uint256 indexed positionId, address indexed liquidator, uint256 exitPrice);
+    event PositionLiquidated(
+        uint256 indexed positionId,
+        address indexed liquidator,
+        uint256 exitPrice
+    );
+
+    /// @notice Emitted when a position is settled after market resolution
+    event PositionSettled(
+        uint256 indexed positionId,
+        address indexed owner,
+        bool marketOutcome,
+        int256 pnl
+    );
 
     /// @notice Emitted when ownership is transferred
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferred(
+        address indexed previousOwner,
+        address indexed newOwner
+    );
 
     /// @notice Emitted when fee recipient is changed
-    event FeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
+    event FeeRecipientUpdated(
+        address indexed previousRecipient,
+        address indexed newRecipient
+    );
 
     // ============ CONSTANTS ============
 
@@ -139,12 +173,18 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
     /// @notice Mapping of user address to their position IDs
     mapping(address => uint256[]) public userPositions;
 
+    /// @notice Mapping of market ID to position IDs (for batch settlement)
+    mapping(string => uint256[]) public marketPositions;
+
     /// @notice Total protocol fees collected
     uint256 public totalFeesCollected;
 
     /// @notice Modifier to check oracle freshness
     modifier oracleFresh(string calldata marketId) {
-        require(oracle.isMarketDataFresh(marketId, MAX_ORACLE_STALENESS), "Oracle data stale");
+        require(
+            oracle.isMarketDataFresh(marketId, MAX_ORACLE_STALENESS),
+            "Oracle data stale"
+        );
         _;
     }
 
@@ -183,11 +223,20 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
         Direction direction,
         uint256 collateral,
         uint256 leverage
-    ) external override nonReentrant oracleFresh(marketId) returns (uint256 positionId) {
+    )
+        external
+        override
+        nonReentrant
+        oracleFresh(marketId)
+        returns (uint256 positionId)
+    {
         // Validate inputs
         require(collateral >= MIN_COLLATERAL, "Collateral too low");
         require(leverage >= MIN_LEVERAGE, "Leverage too low");
         require(leverage <= MAX_LEVERAGE, "Leverage too high");
+
+        // Block opening positions on resolved markets
+        require(!oracle.isMarketResolved(marketId), "Market already resolved");
 
         // Get entry price from oracle
         uint256 entryPrice = _getEntryPrice(marketId, direction);
@@ -196,17 +245,37 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
         uint256 netCollateral = _processCollateral(collateral);
 
         // Create and store position
-        positionId = _createPosition(marketId, direction, netCollateral, leverage, entryPrice);
+        positionId = _createPosition(
+            marketId,
+            direction,
+            netCollateral,
+            leverage,
+            entryPrice
+        );
 
-        emit PositionOpened(positionId, msg.sender, marketId, direction, netCollateral, leverage, entryPrice);
+        emit PositionOpened(
+            positionId,
+            msg.sender,
+            marketId,
+            direction,
+            netCollateral,
+            leverage,
+            entryPrice
+        );
     }
 
     /**
      * @notice Get entry price from oracle for a direction
+     * @dev Validates price is non-zero to prevent division by zero in PnL calculations
      */
-    function _getEntryPrice(string calldata marketId, Direction direction) internal view returns (uint256) {
+    function _getEntryPrice(
+        string calldata marketId,
+        Direction direction
+    ) internal view returns (uint256) {
         (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(marketId);
-        return _getDirectionalPrice(direction, yesPrice, noPrice);
+        uint256 price = _getDirectionalPrice(direction, yesPrice, noPrice);
+        require(price > 0, "Invalid oracle price");
+        return price;
     }
 
     /**
@@ -241,10 +310,12 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
             entryPrice: entryPrice,
             size: size,
             openTimestamp: block.timestamp,
-            isOpen: true
+            isOpen: true,
+            settled: false
         });
 
         userPositions[msg.sender].push(positionId);
+        marketPositions[marketId].push(positionId);
     }
 
     /**
@@ -252,14 +323,22 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      * @param positionId The position ID to close
      * @return pnl The profit/loss in collateral token units
      */
-    function closePosition(uint256 positionId) external override nonReentrant returns (int256 pnl) {
+    function closePosition(
+        uint256 positionId
+    ) external override nonReentrant returns (int256 pnl) {
         Position storage position = positions[positionId];
         require(position.isOpen, "Position not open");
         require(position.owner == msg.sender, "Not position owner");
 
         // Get current price
-        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(position.marketId);
-        uint256 exitPrice = _getDirectionalPrice(position.direction, yesPrice, noPrice);
+        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(
+            position.marketId
+        );
+        uint256 exitPrice = _getDirectionalPrice(
+            position.direction,
+            yesPrice,
+            noPrice
+        );
 
         // Calculate PnL
         pnl = _calculatePnL(position, exitPrice);
@@ -283,14 +362,22 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      * @notice Liquidate an underwater position
      * @param positionId The position ID to liquidate
      */
-    function liquidatePosition(uint256 positionId) external override nonReentrant {
+    function liquidatePosition(
+        uint256 positionId
+    ) external override nonReentrant {
         Position storage position = positions[positionId];
         require(position.isOpen, "Position not open");
         require(isLiquidatable(positionId), "Not liquidatable");
 
         // Get current price
-        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(position.marketId);
-        uint256 exitPrice = _getDirectionalPrice(position.direction, yesPrice, noPrice);
+        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(
+            position.marketId
+        );
+        uint256 exitPrice = _getDirectionalPrice(
+            position.direction,
+            yesPrice,
+            noPrice
+        );
 
         // Calculate liquidation reward
         uint256 reward = (position.collateral * LIQUIDATION_REWARD) / BPS;
@@ -311,7 +398,9 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      * @param positionId The position ID
      * @return The position struct
      */
-    function getPosition(uint256 positionId) external view override returns (Position memory) {
+    function getPosition(
+        uint256 positionId
+    ) external view override returns (Position memory) {
         return positions[positionId];
     }
 
@@ -320,12 +409,20 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      * @param positionId The position ID
      * @return pnl The profit/loss in collateral token units
      */
-    function calculatePnL(uint256 positionId) external view override returns (int256 pnl) {
+    function calculatePnL(
+        uint256 positionId
+    ) external view override returns (int256 pnl) {
         Position memory position = positions[positionId];
         require(position.isOpen, "Position not open");
 
-        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(position.marketId);
-        uint256 currentPrice = _getDirectionalPrice(position.direction, yesPrice, noPrice);
+        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(
+            position.marketId
+        );
+        uint256 currentPrice = _getDirectionalPrice(
+            position.direction,
+            yesPrice,
+            noPrice
+        );
 
         return _calculatePnL(position, currentPrice);
     }
@@ -335,7 +432,9 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      * @param positionId The position ID
      * @return True if the position is liquidatable
      */
-    function isLiquidatable(uint256 positionId) public view override returns (bool) {
+    function isLiquidatable(
+        uint256 positionId
+    ) public view override returns (bool) {
         Position memory position = positions[positionId];
         if (!position.isOpen) return false;
 
@@ -343,7 +442,8 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
         int256 equity = int256(position.collateral) + pnl;
 
         // Liquidatable if equity is below liquidation threshold
-        int256 threshold = (int256(position.collateral) * int256(BPS - LIQUIDATION_THRESHOLD)) / int256(BPS);
+        int256 threshold = (int256(position.collateral) *
+            int256(BPS - LIQUIDATION_THRESHOLD)) / int256(BPS);
 
         return equity < threshold;
     }
@@ -353,8 +453,126 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
      * @param user The user address
      * @return Array of position IDs
      */
-    function getUserPositions(address user) external view returns (uint256[] memory) {
+    function getUserPositions(
+        address user
+    ) external view returns (uint256[] memory) {
         return userPositions[user];
+    }
+
+    /**
+     * @notice Get all positions for a market
+     * @param marketId The market ID
+     * @return Array of position IDs
+     */
+    function getMarketPositions(
+        string calldata marketId
+    ) external view returns (uint256[] memory) {
+        return marketPositions[marketId];
+    }
+
+    /**
+     * @notice Settle a single position after market resolution
+     * @param positionId The position ID to settle
+     * @dev Anyone can call this to settle positions on resolved markets
+     */
+    function settlePosition(uint256 positionId) external nonReentrant {
+        Position storage position = positions[positionId];
+        require(position.isOpen, "Position not open");
+        require(!position.settled, "Already settled");
+        require(
+            oracle.isMarketResolved(position.marketId),
+            "Market not resolved"
+        );
+
+        // Get final prices (100% or 0% based on outcome)
+        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(
+            position.marketId
+        );
+        uint256 exitPrice = _getDirectionalPrice(
+            position.direction,
+            yesPrice,
+            noPrice
+        );
+
+        // Calculate final PnL
+        int256 pnl = _calculatePnL(position, exitPrice);
+
+        // Calculate payout
+        int256 payout = int256(position.collateral) + pnl;
+        uint256 payoutAmount = payout > 0 ? uint256(payout) : 0;
+
+        // Mark as settled and closed
+        position.isOpen = false;
+        position.settled = true;
+
+        // Transfer payout to position owner
+        if (payoutAmount > 0) {
+            collateralToken.safeTransfer(position.owner, payoutAmount);
+        }
+
+        (, bool outcome) = oracle.getMarketOutcome(position.marketId);
+        emit PositionSettled(positionId, position.owner, outcome, pnl);
+    }
+
+    /**
+     * @notice Batch settle all positions for a resolved market
+     * @param marketId The market ID
+     * @param maxPositions Maximum positions to settle (for gas limits)
+     * @return settledCount Number of positions settled
+     */
+    function settleMarketPositions(
+        string calldata marketId,
+        uint256 maxPositions
+    ) external nonReentrant returns (uint256 settledCount) {
+        require(oracle.isMarketResolved(marketId), "Market not resolved");
+
+        uint256[] storage positionIds = marketPositions[marketId];
+        uint256 toSettle = positionIds.length < maxPositions
+            ? positionIds.length
+            : maxPositions;
+
+        // Get final prices once
+        (uint256 yesPrice, uint256 noPrice) = oracle.getLatestPrice(marketId);
+        (, bool outcome) = oracle.getMarketOutcome(marketId);
+
+        for (uint256 i = 0; i < toSettle; i++) {
+            uint256 positionId = positionIds[i];
+            Position storage position = positions[positionId];
+
+            // Skip already settled or closed positions
+            if (!position.isOpen || position.settled) continue;
+
+            uint256 exitPrice = _getDirectionalPrice(
+                position.direction,
+                yesPrice,
+                noPrice
+            );
+            int256 pnl = _calculatePnL(position, exitPrice);
+
+            int256 payout = int256(position.collateral) + pnl;
+            uint256 payoutAmount = payout > 0 ? uint256(payout) : 0;
+
+            position.isOpen = false;
+            position.settled = true;
+
+            if (payoutAmount > 0) {
+                collateralToken.safeTransfer(position.owner, payoutAmount);
+            }
+
+            emit PositionSettled(positionId, position.owner, outcome, pnl);
+            settledCount++;
+        }
+    }
+
+    /**
+     * @notice Check if a position can be settled (market is resolved)
+     * @param positionId The position ID
+     * @return True if the position can be settled
+     */
+    function isSettleable(uint256 positionId) external view returns (bool) {
+        Position memory position = positions[positionId];
+        if (!position.isOpen || position.settled) return false;
+        return oracle.isMarketResolved(position.marketId);
     }
 
     /**
@@ -396,7 +614,9 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
         uint256 yesPrice,
         uint256 noPrice
     ) internal pure returns (uint256) {
-        if (direction == Direction.LONG_YES || direction == Direction.SHORT_NO) {
+        if (
+            direction == Direction.LONG_YES || direction == Direction.SHORT_NO
+        ) {
             return yesPrice;
         } else {
             return noPrice;
@@ -405,11 +625,23 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
 
     /**
      * @notice Calculate PnL for a position
+     * @dev Defense in depth: returns 0 PnL if entryPrice is 0 to prevent division by zero
      */
-    function _calculatePnL(Position memory position, uint256 currentPrice) internal pure returns (int256) {
+    function _calculatePnL(
+        Position memory position,
+        uint256 currentPrice
+    ) internal pure returns (int256) {
+        // Prevent division by zero (should never happen due to _getEntryPrice validation)
+        if (position.entryPrice == 0) {
+            return 0;
+        }
+
         int256 priceDiff;
 
-        if (position.direction == Direction.LONG_YES || position.direction == Direction.LONG_NO) {
+        if (
+            position.direction == Direction.LONG_YES ||
+            position.direction == Direction.LONG_NO
+        ) {
             // Long: profit when price goes up
             priceDiff = int256(currentPrice) - int256(position.entryPrice);
         } else {
@@ -419,6 +651,7 @@ contract PredictionDerivatives is IPredictionDerivatives, ReentrancyGuard {
 
         // PnL = size * price_change / entry_price
         // Using fixed point math with BPS precision
-        return (int256(position.size) * priceDiff) / int256(position.entryPrice);
+        return
+            (int256(position.size) * priceDiff) / int256(position.entryPrice);
     }
 }

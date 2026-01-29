@@ -95,8 +95,6 @@ const pnl = await derivatives.closePosition(positionId);
 
 ## Security Considerations
 
-Following Trail of Bits best practices:
-
 1. **Reentrancy Protection**: All state-changing functions use ReentrancyGuard
 2. **Oracle Staleness**: Maximum 1 hour staleness for price data
 3. **Input Validation**: Price bounds, leverage limits, minimum collateral
@@ -109,8 +107,8 @@ Following Trail of Bits best practices:
 ```bash
 # Required
 PRIVATE_KEY="0x..."
-WEB2JSON_VERIFIER_URL_TESTNET="https://web2json-verifier-test.flare.rocks"
-VERIFIER_API_KEY_TESTNET="your-api-key"
+WEB2JSON_VERIFIER_URL_TESTNET="https://fdc-verifiers-testnet.flare.network/verifier/web2"
+VERIFIER_API_KEY_TESTNET="00000000-0000-0000-0000-000000000000"
 COSTON2_DA_LAYER_URL="https://ctn2-data-availability.flare.network"
 
 # Optional
