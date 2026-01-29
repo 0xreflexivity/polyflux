@@ -12,7 +12,11 @@ import "../mocks/MockERC20.sol";
 contract MockOracle is IPredictionMarketOracle {
     mapping(string => MarketData) public markets;
 
-    function setMarketData(string memory marketId, uint256 yesPrice, uint256 noPrice) external {
+    function setMarketData(
+        string memory marketId,
+        uint256 yesPrice,
+        uint256 noPrice
+    ) external {
         markets[marketId] = MarketData({
             marketId: marketId,
             question: "Test",
@@ -20,23 +24,64 @@ contract MockOracle is IPredictionMarketOracle {
             noPrice: noPrice,
             volume: 1000000e6,
             liquidity: 1000000e6,
-            timestamp: block.timestamp
+            timestamp: block.timestamp,
+            endDate: 0,
+            resolved: false,
+            outcome: false
         });
+    }
+
+    function resolveMarket(string memory marketId, bool outcome) external {
+        markets[marketId].resolved = true;
+        markets[marketId].outcome = outcome;
+        if (outcome) {
+            markets[marketId].yesPrice = 10000;
+            markets[marketId].noPrice = 0;
+        } else {
+            markets[marketId].yesPrice = 0;
+            markets[marketId].noPrice = 10000;
+        }
     }
 
     function updateMarketData(IWeb2Json.Proof calldata) external override {}
 
-    function getMarketData(string calldata marketId) external view override returns (MarketData memory) {
+    function getMarketData(
+        string calldata marketId
+    ) external view override returns (MarketData memory) {
         return markets[marketId];
     }
 
-    function getLatestPrice(string calldata marketId) external view override returns (uint256 yesPrice, uint256 noPrice) {
+    function getLatestPrice(
+        string calldata marketId
+    ) external view override returns (uint256 yesPrice, uint256 noPrice) {
         MarketData memory data = markets[marketId];
         return (data.yesPrice, data.noPrice);
     }
 
-    function isMarketDataFresh(string calldata, uint256) external pure override returns (bool) {
+    function isMarketDataFresh(
+        string calldata,
+        uint256
+    ) external pure override returns (bool) {
         return true;
+    }
+
+    function isMarketResolved(
+        string calldata marketId
+    ) external view override returns (bool) {
+        return markets[marketId].resolved;
+    }
+
+    function getMarketOutcome(
+        string calldata marketId
+    ) external view override returns (bool resolved, bool outcome) {
+        MarketData memory data = markets[marketId];
+        return (data.resolved, data.outcome);
+    }
+
+    function getMarketEndDate(
+        string calldata marketId
+    ) external view override returns (uint256) {
+        return markets[marketId].endDate;
     }
 }
 
@@ -58,7 +103,10 @@ contract EchidnaTest {
     constructor() {
         oracle = new MockOracle();
         token = new MockERC20("USDC", "USDC", 6);
-        derivatives = new PredictionDerivatives(address(oracle), address(token));
+        derivatives = new PredictionDerivatives(
+            address(oracle),
+            address(token)
+        );
 
         // Setup initial market data
         oracle.setMarketData(MARKET_ID, 5000, 5000);
@@ -92,8 +140,10 @@ contract EchidnaTest {
         for (uint256 i = 1; i < nextId; i++) {
             Position memory pos = derivatives.getPosition(i);
             if (pos.isOpen) {
-                if (pos.leverage < derivatives.MIN_LEVERAGE() ||
-                    pos.leverage > derivatives.MAX_LEVERAGE()) {
+                if (
+                    pos.leverage < derivatives.MIN_LEVERAGE() ||
+                    pos.leverage > derivatives.MAX_LEVERAGE()
+                ) {
                     return false;
                 }
             }
@@ -123,7 +173,8 @@ contract EchidnaTest {
         for (uint256 i = 1; i < nextId; i++) {
             Position memory pos = derivatives.getPosition(i);
             if (pos.isOpen) {
-                uint256 expectedSize = (pos.collateral * pos.leverage) / derivatives.BPS();
+                uint256 expectedSize = (pos.collateral * pos.leverage) /
+                    derivatives.BPS();
                 if (pos.size != expectedSize) {
                     return false;
                 }
@@ -138,7 +189,14 @@ contract EchidnaTest {
         collateral = _boundCollateral(collateral);
         leverage = _boundLeverage(leverage);
 
-        try derivatives.openPosition(MARKET_ID, Direction.LONG_YES, collateral, leverage) {
+        try
+            derivatives.openPosition(
+                MARKET_ID,
+                Direction.LONG_YES,
+                collateral,
+                leverage
+            )
+        {
             totalDeposited += collateral;
         } catch {}
     }
@@ -147,7 +205,14 @@ contract EchidnaTest {
         collateral = _boundCollateral(collateral);
         leverage = _boundLeverage(leverage);
 
-        try derivatives.openPosition(MARKET_ID, Direction.LONG_NO, collateral, leverage) {
+        try
+            derivatives.openPosition(
+                MARKET_ID,
+                Direction.LONG_NO,
+                collateral,
+                leverage
+            )
+        {
             totalDeposited += collateral;
         } catch {}
     }
@@ -156,7 +221,14 @@ contract EchidnaTest {
         collateral = _boundCollateral(collateral);
         leverage = _boundLeverage(leverage);
 
-        try derivatives.openPosition(MARKET_ID, Direction.SHORT_YES, collateral, leverage) {
+        try
+            derivatives.openPosition(
+                MARKET_ID,
+                Direction.SHORT_YES,
+                collateral,
+                leverage
+            )
+        {
             totalDeposited += collateral;
         } catch {}
     }
@@ -165,7 +237,14 @@ contract EchidnaTest {
         collateral = _boundCollateral(collateral);
         leverage = _boundLeverage(leverage);
 
-        try derivatives.openPosition(MARKET_ID, Direction.SHORT_NO, collateral, leverage) {
+        try
+            derivatives.openPosition(
+                MARKET_ID,
+                Direction.SHORT_NO,
+                collateral,
+                leverage
+            )
+        {
             totalDeposited += collateral;
         } catch {}
     }
@@ -185,8 +264,7 @@ contract EchidnaTest {
     function liquidatePosition(uint256 positionId) public {
         positionId = _boundPositionId(positionId);
 
-        try derivatives.liquidatePosition(positionId) {
-        } catch {}
+        try derivatives.liquidatePosition(positionId) {} catch {}
     }
 
     function updatePrice(uint256 yesPrice, uint256 noPrice) public {
@@ -197,7 +275,9 @@ contract EchidnaTest {
 
     // ============ HELPERS ============
 
-    function _boundCollateral(uint256 collateral) internal view returns (uint256) {
+    function _boundCollateral(
+        uint256 collateral
+    ) internal view returns (uint256) {
         uint256 minCollateral = derivatives.MIN_COLLATERAL();
         uint256 maxCollateral = 1000e6; // Max 1000 USDC per position
         return minCollateral + (collateral % (maxCollateral - minCollateral));
@@ -209,7 +289,9 @@ contract EchidnaTest {
         return minLev + (leverage % (maxLev - minLev + 1));
     }
 
-    function _boundPositionId(uint256 positionId) internal view returns (uint256) {
+    function _boundPositionId(
+        uint256 positionId
+    ) internal view returns (uint256) {
         uint256 nextId = derivatives.nextPositionId();
         if (nextId <= 1) return 1;
         return 1 + (positionId % (nextId - 1));
