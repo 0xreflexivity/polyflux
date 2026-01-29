@@ -1,6 +1,6 @@
-# FLUX - Prediction Market Derivatives on Flare
+# POLYFLUX - Prediction Market Derivatives on Flare
 
-FLUX enables leveraged prediction market positions on Flare Network using the Flare Data Connector (FDC) to fetch real-time market data from Polymarket.
+POLYFLUX enables leveraged prediction market positions on Flare Network using the Flare Data Connector (FDC) to fetch real-time market data from Polymarket.
 
 ## Overview
 
@@ -12,21 +12,21 @@ FLUX enables leveraged prediction market positions on Flare Network using the Fl
 ## Architecture
 
 ```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│   Polymarket    │────▶│   Flare FDC     │────▶│  FLUX Contracts │
-│   Gamma API     │     │   Web2Json      │     │                 │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌───────────────────┐
+│   Polymarket    │────▶│   Flare FDC     │────▶│ POLYFLUX Contracts│
+│   Gamma API     │     │   Web2Json      │     │                   │
+└─────────────────┘     └─────────────────┘     └───────────────────┘
                                                          │
                                                          ▼
-                                                ┌─────────────────┐
-                                                │   FLUX Frontend │
-                                                └─────────────────┘
+                                                ┌───────────────────┐
+                                                │ POLYFLUX Frontend │
+                                                └───────────────────┘
 ```
 
 ## Project Structure
 
 ```
-flux/
+polyflux/
 ├── contracts/           # Solidity smart contracts
 │   ├── PredictionMarketOracle.sol
 │   ├── PredictionDerivatives.sol

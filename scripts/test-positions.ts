@@ -6,7 +6,7 @@ const PredictionDerivatives = artifacts.require("PredictionDerivatives");
 
 async function main() {
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("🚀 FLUX Position Test on Coston2");
+    console.log("🚀 POLYFLUX Position Test on Coston2");
     console.log("═══════════════════════════════════════════════════════════\n");
 
     const accounts = await web3.eth.getAccounts();

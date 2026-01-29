@@ -8,7 +8,7 @@ const GAMMA_API = "https://gamma-api.polymarket.com";
 
 async function main() {
     console.log("═══════════════════════════════════════════════════════════");
-    console.log("🚀 FLUX Deployment Test on Coston2");
+    console.log("🚀 POLYFLUX Deployment Test on Coston2");
     console.log("═══════════════════════════════════════════════════════════\n");
 
     const accounts = await web3.eth.getAccounts();
