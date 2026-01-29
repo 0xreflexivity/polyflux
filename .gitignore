@@ -9,3 +9,10 @@ dist/
 .DS_Store
 typechain-types/
 frontend/dist/
+
+# Security analysis artifacts
+echidna-corpus/
+crytic-export/
+slither-output.json
+echidna.yaml
+*.sarif
