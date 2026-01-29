@@ -68,7 +68,7 @@ const abiSignature = `{
 
 // Configuration constants
 const attestationTypeBase = "Web2Json";
-const sourceIdBase = "PublicWeb2";
+const sourceIdBase = "testIgnite";
 const verifierUrlBase = WEB2JSON_VERIFIER_URL_TESTNET;
 
 /**

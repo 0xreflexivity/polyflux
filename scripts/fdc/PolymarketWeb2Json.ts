@@ -1,45 +1,45 @@
-/**
- * POLYFLUX E2E Test
- *
- * Tests the full flow of fetching Polymarket data via FDC and updating the oracle.
- *
- * Usage:
- *   npx hardhat run scripts/e2e-test.ts --network coston2
- */
-
-import hre, { web3 } from "hardhat";
+import { run, web3 } from "hardhat";
+import { PredictionMarketOracleV2Instance } from "../../typechain-types";
 import {
     prepareAttestationRequestBase,
     submitAttestationRequest,
     retrieveDataAndProofBaseWithRetry,
-} from "./utils/fdc";
+} from "../utils/fdc";
 
 const PredictionMarketOracleV2 = artifacts.require("PredictionMarketOracleV2");
 
 const { WEB2JSON_VERIFIER_URL_TESTNET, VERIFIER_API_KEY_TESTNET, COSTON2_DA_LAYER_URL, ORACLE_ADDRESS } = process.env;
 
-// ============ POLYMARKET CONFIG ============
+// yarn hardhat run scripts/fdc/PolymarketWeb2Json.ts --network coston2
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+// ============ POLYMARKET CONFIGURATION ============
 
-interface PolymarketMarket {
-    id: string;
-    slug: string;
-    question: string;
-    outcomePrices: string;
-    volume24hr: number;
-    volumeNum: number;
-    liquidityNum: number;
-}
+const POLYMARKET_API = "https://gamma-api.polymarket.com";
 
-// ============ CONFIGURATION ============
-
-const attestationTypeBase = "Web2Json";
-const sourceIdBase = "testIgnite";
-const verifierUrlBase = WEB2JSON_VERIFIER_URL_TESTNET;
+// Default market for testing
+const defaultMarketSlug = "will-bitcoin-reach-150k-in-january-2026";
 
 /**
  * Build the jq transform for Polymarket market data
+ *
+ * Input from Polymarket API:
+ * {
+ *   "slug": "market-slug",
+ *   "question": "Will X happen?",
+ *   "outcomePrices": "[\"0.45\", \"0.55\"]",
+ *   "volume24hr": 123456.78,
+ *   "liquidityNum": 50000.00
+ * }
+ *
+ * Output:
+ * {
+ *   "marketId": "market-slug",
+ *   "question": "Will X happen?",
+ *   "yesPrice": 4500,      // basis points (0.45 * 10000)
+ *   "noPrice": 5500,       // basis points
+ *   "volume": 123456780000, // scaled by 1e6
+ *   "liquidity": 50000000000 // scaled by 1e6
+ * }
  */
 function buildPostProcessJq(): string {
     return `
@@ -61,20 +61,15 @@ function buildPostProcessJq(): string {
 // ABI signature for the MarketDTO struct
 const abiSignature = `{"components": [{"internalType": "string", "name": "marketId", "type": "string"},{"internalType": "string", "name": "question", "type": "string"},{"internalType": "uint256", "name": "yesPrice", "type": "uint256"},{"internalType": "uint256", "name": "noPrice", "type": "uint256"},{"internalType": "uint256", "name": "volume", "type": "uint256"},{"internalType": "uint256", "name": "liquidity", "type": "uint256"}],"name": "MarketDTO","type": "tuple"}`;
 
-// ============ FETCH FUNCTIONS ============
+// Configuration constants
+const attestationTypeBase = "Web2Json";
+const sourceIdBase = "testIgnite";
+const verifierUrlBase = WEB2JSON_VERIFIER_URL_TESTNET;
 
-async function fetchTopMarkets(limit: number = 5): Promise<PolymarketMarket[]> {
-    const response = await fetch(
-        `${GAMMA_API}/markets?limit=${limit}&active=true&closed=false&order=volume24hr&ascending=false`
-    );
-    const data = await response.json();
-    return data.filter((m: any) => m.outcomePrices && m.question && m.slug);
-}
-
-// ============ FDC FUNCTIONS ============
+// ============ ATTESTATION FUNCTIONS ============
 
 async function prepareAttestationRequest(marketSlug: string) {
-    const apiUrl = `${GAMMA_API}/markets?slug=${marketSlug}`;
+    const apiUrl = `${POLYMARKET_API}/markets?slug=${marketSlug}`;
     const postProcessJq = buildPostProcessJq();
 
     const requestBody = {
@@ -95,23 +90,35 @@ async function prepareAttestationRequest(marketSlug: string) {
 
 async function retrieveDataAndProof(abiEncodedRequest: string, roundId: number) {
     const url = `${COSTON2_DA_LAYER_URL}/api/v1/fdc/proof-by-request-round-raw`;
-    console.log("DA Layer URL:", url, "\n");
+    console.log("Url:", url, "\n");
     return await retrieveDataAndProofBaseWithRetry(url, abiEncodedRequest, roundId);
 }
 
-// ============ ORACLE FUNCTIONS ============
-
-async function updateOracle(proof: any) {
-    if (!ORACLE_ADDRESS) {
-        console.log("No ORACLE_ADDRESS set, skipping oracle update\n");
-        return;
+async function getOrDeployOracle(): Promise<PredictionMarketOracleV2Instance> {
+    if (ORACLE_ADDRESS) {
+        console.log("Using existing oracle at:", ORACLE_ADDRESS, "\n");
+        return await PredictionMarketOracleV2.at(ORACLE_ADDRESS);
     }
 
-    const oracle = await PredictionMarketOracleV2.at(ORACLE_ADDRESS);
+    // Deploy new oracle
+    const args: any[] = [];
+    const oracle: PredictionMarketOracleV2Instance = await PredictionMarketOracleV2.new(...args);
+    try {
+        await run("verify:verify", {
+            address: oracle.address,
+            constructorArguments: args,
+        });
+    } catch (e: any) {
+        console.log(e);
+    }
+    console.log("PredictionMarketOracleV2 deployed to", oracle.address, "\n");
+    return oracle;
+}
 
+async function submitProofToOracle(oracle: PredictionMarketOracleV2Instance, proof: any) {
     console.log("Proof hex:", proof.response_hex, "\n");
 
-    // Decode the proof response
+    // Decode the proof response using the IWeb2JsonVerification artifact
     const IWeb2JsonVerification = await artifacts.require("IWeb2JsonVerification");
     const responseType = IWeb2JsonVerification._json.abi[0].inputs[0].components[1];
     console.log("Response type:", responseType, "\n");
@@ -126,7 +133,7 @@ async function updateOracle(proof: any) {
     });
     console.log("Transaction:", transaction.tx, "\n");
 
-    // Verify
+    // Verify the update
     const marketData = await oracle.getMarketData((decodedResponse as any).marketId);
     console.log("Updated market data:", marketData, "\n");
 }
@@ -134,50 +141,34 @@ async function updateOracle(proof: any) {
 // ============ MAIN ============
 
 async function main() {
+    // Get market slug from command line args or use default
+    const args = process.argv.slice(2);
+    const marketSlug = args.find((arg) => !arg.startsWith("--")) || defaultMarketSlug;
+
     console.log("═".repeat(60));
-    console.log("  POLYFLUX E2E Test");
+    console.log("  POLYFLUX - Polymarket FDC Attestation");
     console.log("═".repeat(60));
-    console.log(`  Network: ${hre.network.name}`);
-    console.log(`  Oracle: ${ORACLE_ADDRESS || "Not set"}`);
+    console.log(`  Market: ${marketSlug}`);
     console.log(`  Verifier: ${verifierUrlBase}`);
     console.log("═".repeat(60));
 
-    // Step 1: Fetch top markets from Polymarket
-    console.log("\n=== Step 1: Fetching top markets from Polymarket ===\n");
-    const markets = await fetchTopMarkets(3);
-    console.log(
-        "Top markets:",
-        markets.map((m) => m.slug),
-        "\n"
-    );
-
-    if (markets.length === 0) {
-        throw new Error("No markets found");
-    }
-
-    const market = markets[0];
-    console.log(`Testing with market: ${market.slug}\n`);
-
-    // Step 2: Prepare attestation request
-    console.log("=== Step 2: Preparing attestation request ===\n");
-    const data = await prepareAttestationRequest(market.slug);
-    console.log("Prepared request data:", data, "\n");
+    // Step 1: Prepare attestation request
+    const data = await prepareAttestationRequest(marketSlug);
+    console.log("Data:", data, "\n");
 
     const abiEncodedRequest = data.abiEncodedRequest;
 
-    // Step 3: Submit to FdcHub
-    console.log("=== Step 3: Submitting to FdcHub ===\n");
+    // Step 2: Submit to FdcHub
     const roundId = await submitAttestationRequest(abiEncodedRequest);
 
-    // Step 4: Wait for proof
-    console.log("=== Step 4: Waiting for proof ===\n");
+    // Step 3: Wait for proof and retrieve
     const proof = await retrieveDataAndProof(abiEncodedRequest, roundId);
 
-    // Step 5: Update oracle
-    console.log("=== Step 5: Updating oracle ===\n");
-    await updateOracle(proof);
+    // Step 4: Get oracle and submit proof
+    const oracle = await getOrDeployOracle();
+    await submitProofToOracle(oracle, proof);
 
-    console.log("✅ E2E test completed successfully!\n");
+    console.log("✅ Market data updated via FDC!\n");
 }
 
 void main().then(() => {

@@ -48,13 +48,13 @@ const config: Config = {
     oracleAddress: process.env.ORACLE_ADDRESS || "",
 
     // FDC Endpoints
-    web2JsonVerifierUrl: process.env.WEB2JSON_VERIFIER_URL || "https://web2json-verifier-test.flare.rocks/",
+    web2JsonVerifierUrl: process.env.WEB2JSON_VERIFIER_URL || "https://fdc-verifiers-testnet.flare.network/verifier/web2",
     daLayerUrl: process.env.DA_LAYER_URL || "https://ctn2-data-availability.flare.network/",
     verifierApiKey: process.env.VERIFIER_API_KEY || "00000000-0000-0000-0000-000000000000",
 
     // FDC Attestation Config
     attestationType: "Web2Json",
-    sourceId: "PublicWeb2",
+    sourceId: "testIgnite",
 
     // Polymarket
     polymarketApi: "https://gamma-api.polymarket.com",
@@ -123,6 +123,93 @@ class FdcKeeper {
         console.log(`  ProtocolId: ${this.protocolId}`);
         console.log("═".repeat(60));
         console.log("");
+    }
+
+    /**
+     * Fetch markets that are resolved on Polymarket but not on-chain
+     */
+    async fetchMarketsNeedingResolution(): Promise<string[]> {
+        try {
+            // Fetch recently closed/resolved markets from Polymarket
+            const response = await fetch(
+                `${config.polymarketApi}/markets?limit=50&closed=true&order=endDate&ascending=false`
+            );
+            const markets = (await response.json()) as PolymarketApiMarket[];
+
+            const needsResolution: string[] = [];
+
+            for (const market of markets) {
+                if (!market.slug || !market.outcomePrices) continue;
+
+                // Parse prices to check if resolved (one side at 100%)
+                try {
+                    const prices = JSON.parse(market.outcomePrices) as string[];
+                    const yesPrice = parseFloat(prices[0]) * 10000;
+                    const noPrice = parseFloat(prices[1]) * 10000;
+
+                    // Market is resolved if one price is >= 99%
+                    const isResolvedOnPolymarket = yesPrice >= 9900 || noPrice >= 9900;
+                    if (!isResolvedOnPolymarket) continue;
+
+                    // Check if we have this market and if it's already resolved on-chain
+                    try {
+                        const marketData = await this.oracle.getMarketData(market.slug);
+                        if (!marketData.resolved) {
+                            needsResolution.push(market.slug);
+                        }
+                    } catch {
+                        // Market doesn't exist on-chain, skip
+                        continue;
+                    }
+                } catch {
+                    continue;
+                }
+            }
+
+            return needsResolution;
+        } catch (error) {
+            console.error("Error fetching resolved markets:", error instanceof Error ? error.message : "Unknown error");
+            return [];
+        }
+    }
+
+    /**
+     * Resolve a market via FDC proof
+     */
+    async resolveMarketViaFdc(marketSlug: string): Promise<boolean> {
+        console.log(`  🏁 Resolving: ${marketSlug}`);
+
+        try {
+            // 1. Prepare request (same as update, but we'll use it for resolution)
+            const { abiEncodedRequest } = await this.prepareAttestationRequest(marketSlug);
+            console.log(`     Prepared attestation request`);
+
+            // 2. Submit to FdcHub
+            const { receipt } = await submitAttestationRequest(this.fdcHub, this.feeConfig, abiEncodedRequest);
+            const roundId = await calculateRoundId(this.provider, this.systemsManager, receipt.blockNumber);
+            console.log(`     Submitted to FdcHub (round ${roundId})`);
+
+            // 3. Wait for finalization
+            await waitForRoundFinalization(this.relay, this.protocolId, roundId);
+
+            // 4. Retrieve proof
+            const proof = await retrieveProofFromDALayer(config.daLayerUrl, abiEncodedRequest, roundId);
+
+            // 5. Submit to oracle for resolution
+            const proofStruct = {
+                merkleProof: proof.proof,
+                data: proof.response_hex,
+            };
+
+            const tx = await this.oracle.resolveMarketWithProof(proofStruct);
+            await tx.wait();
+            console.log(`     ✅ Market resolved on-chain`);
+
+            return true;
+        } catch (error) {
+            console.error(`     ❌ Resolution failed: ${error instanceof Error ? error.message : "Unknown error"}`);
+            return false;
+        }
     }
 
     /**
@@ -231,26 +318,53 @@ class FdcKeeper {
     async runCycle(): Promise<void> {
         console.log(`\n[${new Date().toISOString()}] Starting FDC update cycle...\n`);
 
+        // === PHASE 1: RESOLVE ENDED MARKETS ===
+        console.log("  📋 Phase 1: Checking for markets to resolve...\n");
+        const marketsToResolve = await this.fetchMarketsNeedingResolution();
+
+        if (marketsToResolve.length > 0) {
+            console.log(`  Found ${marketsToResolve.length} markets needing resolution\n`);
+
+            let resolved = 0;
+            let resolveFailed = 0;
+
+            for (const slug of marketsToResolve.slice(0, config.maxMarketsPerCycle)) {
+                const success = await this.resolveMarketViaFdc(slug);
+                if (success) resolved++;
+                else resolveFailed++;
+
+                await sleep(2000); // Rate limiting
+            }
+
+            console.log(`\n  Resolution: ${resolved} resolved, ${resolveFailed} failed\n`);
+        } else {
+            console.log("  No markets need resolution\n");
+        }
+
+        // === PHASE 2: UPDATE ACTIVE MARKET PRICES ===
+        console.log("  📋 Phase 2: Checking for markets to update...\n");
         const marketsToUpdate = await this.fetchMarketsNeedingUpdate();
-        console.log(`  Found ${marketsToUpdate.length} markets needing update\n`);
 
-        if (marketsToUpdate.length === 0) {
+        if (marketsToUpdate.length > 0) {
+            console.log(`  Found ${marketsToUpdate.length} markets needing update\n`);
+
+            let updated = 0;
+            let failed = 0;
+
+            for (const slug of marketsToUpdate.slice(0, config.maxMarketsPerCycle)) {
+                const success = await this.updateMarketViaFdc(slug);
+                if (success) updated++;
+                else failed++;
+
+                await sleep(2000); // Rate limiting
+            }
+
+            console.log(`\n  Updates: ${updated} updated, ${failed} failed\n`);
+        } else {
             console.log("  All markets are fresh\n");
-            return;
         }
 
-        let updated = 0;
-        let failed = 0;
-
-        for (const slug of marketsToUpdate.slice(0, config.maxMarketsPerCycle)) {
-            const success = await this.updateMarketViaFdc(slug);
-            if (success) updated++;
-            else failed++;
-
-            await sleep(2000); // Rate limiting
-        }
-
-        console.log(`\n  Cycle complete: ${updated} updated, ${failed} failed\n`);
+        console.log("  ✓ Cycle complete\n");
     }
 
     /**

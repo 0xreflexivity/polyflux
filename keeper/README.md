@@ -1,11 +1,18 @@
 # POLYFLUX FDC Keeper
 
-Permissionless keeper that updates oracle prices via Flare Data Connector (FDC) attestations.
+Permissionless keeper that updates oracle prices and resolves markets via Flare Data Connector (FDC) attestations.
 
 ## Overview
 
-The keeper automatically:
-1. Monitors markets that need price updates
+The keeper runs two phases each cycle:
+
+**Phase 1 - Market Resolution:**
+1. Checks for markets resolved on Polymarket (price at 100%) but not on-chain
+2. Fetches FDC proof showing the resolved state
+3. Calls `resolveMarketWithProof()` to finalize on-chain
+
+**Phase 2 - Price Updates:**
+1. Monitors active markets that need price updates
 2. Requests FDC Web2Json attestations for Polymarket data
 3. Waits for voting round finalization
 4. Retrieves proofs from the DA layer
@@ -45,7 +52,7 @@ yarn start
 | `RPC_URL` | Flare network RPC endpoint | coston2-api.flare.network |
 | `PRIVATE_KEY` | Wallet private key for gas | Required |
 | `ORACLE_ADDRESS` | Oracle contract address | Required |
-| `WEB2JSON_VERIFIER_URL` | FDC Web2Json verifier | web2json-verifier-test.flare.rocks |
+| `WEB2JSON_VERIFIER_URL` | FDC Web2Json verifier | fdc-verifiers-testnet.flare.network/verifier/web2 |
 | `DA_LAYER_URL` | Data Availability layer | ctn2-data-availability.flare.network |
 | `UPDATE_INTERVAL_MS` | Update cycle interval | 600000 (10 min) |
 
@@ -79,7 +86,7 @@ Polymarket API → Web2Json Verifier → FdcHub → Voting Round → DA Layer �
 
 ## Notes
 
-- The keeper uses `PublicWeb2` source ID for Web2Json attestations
+- The keeper uses `testIgnite` source ID for Web2Json attestations
 - Markets with < $1000 liquidity are skipped
 - Updates are skipped if market data is fresh (< 1 hour old)
 - The keeper handles rate limiting automatically
