@@ -88,7 +88,7 @@ contract PredictionMarketOracleV2 {
 
     /// @notice Expected URL prefix for Polymarket API
     string public constant POLYMARKET_API_PREFIX =
-        "https://gamma-api.polymarket.com/markets";
+        "https://clob.polymarket.com/markets";
 
     // ============ STATE ============
 
