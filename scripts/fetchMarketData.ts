@@ -13,44 +13,37 @@ const { WEB2JSON_VERIFIER_URL_TESTNET, VERIFIER_API_KEY_TESTNET, COSTON2_DA_LAYE
 // yarn hardhat run scripts/predictionMarket/fetchMarketData.ts --network coston2
 
 /**
- * Polymarket API configuration
+ * Polymarket CLOB API configuration
  *
- * The gamma-api returns market data with:
- * - id: market identifier
+ * The CLOB API returns market data with:
+ * - market_slug: market identifier
  * - question: the prediction question
- * - outcomePrices: array of [yesPrice, noPrice] as strings
- * - volume: total trading volume
- * - liquidity: current liquidity
+ * - tokens[0].price: YES price (0-1)
+ * - tokens[1].price: NO price (0-1)
  */
 
 // Configuration for a specific Polymarket market
-// Replace with any active market slug from polymarket.com
-const MARKET_SLUG = "will-trump-deport-250000-500000-people";
+// Replace with any active market condition_id from polymarket.com
+const MARKET_CONDITION_ID = "0x49686d26fb712515cd5e12c23f0a1c7e10214c7faa3cb0a730aabe0c33694082";
 
-// Polymarket API URL for single market
-const getApiUrl = (slug: string) => `https://gamma-api.polymarket.com/markets?slug=${slug}`;
+// Polymarket CLOB API URL for single market by condition_id
+const getApiUrl = (conditionId: string) => `https://clob.polymarket.com/markets/${conditionId}`;
 
 /**
  * JQ transformation to extract and format market data
  *
- * This transforms the Polymarket API response into our contract's expected format:
- * - marketId: string identifier
+ * This transforms the Polymarket CLOB API response into our contract's expected format:
+ * - marketId: string identifier (from market_slug)
  * - question: the prediction question text
  * - yesPrice: YES outcome price in basis points (0-10000)
  * - noPrice: NO outcome price in basis points (0-10000)
- * - volume: total volume scaled to uint256 (multiply by 1e6)
- * - liquidity: current liquidity scaled to uint256 (multiply by 1e6)
+ * - volume: placeholder (CLOB API doesn't have volume per market)
+ * - liquidity: placeholder (CLOB API doesn't have liquidity per market)
+ *
+ * Note: CLOB API returns single object, not array.
+ * Uses | . - (. % 1) to truncate decimals (floor not supported).
  */
-const postProcessJq = `
-.[0] | {
-    marketId: .slug,
-    question: .question,
-    yesPrice: ((.outcomePrices | fromjson)[0] | tonumber * 10000 | floor),
-    noPrice: ((.outcomePrices | fromjson)[1] | tonumber * 10000 | floor),
-    volume: (.volumeNum * 1000000 | floor),
-    liquidity: (.liquidityNum * 1000000 | floor)
-}
-`.trim();
+const postProcessJq = `{marketId: .market_slug, question: .question[0:100], yesPrice: (.tokens[0].price * 10000 | . - (. % 1)), noPrice: (.tokens[1].price * 10000 | . - (. % 1)), volume: 1000000, liquidity: 1000000}`;
 
 // ABI signature for the MarketDTO struct
 const abiSignature = `{
@@ -68,14 +61,14 @@ const abiSignature = `{
 
 // Configuration constants
 const attestationTypeBase = "Web2Json";
-const sourceIdBase = "testIgnite";
+const sourceIdBase = "PublicWeb2";  // Unrestricted on testnet - allows any public URL
 const verifierUrlBase = WEB2JSON_VERIFIER_URL_TESTNET;
 
 /**
  * Prepare the attestation request for the Web2Json verifier
  */
-async function prepareAttestationRequest(marketSlug: string) {
-    const apiUrl = getApiUrl(marketSlug);
+async function prepareAttestationRequest(conditionId: string) {
+    const apiUrl = getApiUrl(conditionId);
 
     const requestBody = {
         url: apiUrl,
@@ -90,7 +83,7 @@ async function prepareAttestationRequest(marketSlug: string) {
     const url = `${verifierUrlBase}/Web2Json/prepareRequest`;
     const apiKey = VERIFIER_API_KEY_TESTNET ?? "";
 
-    console.log("Preparing attestation request for market:", marketSlug);
+    console.log("Preparing attestation request for condition_id:", conditionId);
     console.log("API URL:", apiUrl);
 
     return await prepareAttestationRequestBase(url, apiKey, attestationTypeBase, sourceIdBase, requestBody);
@@ -174,7 +167,7 @@ async function main() {
 
     // 1. Prepare the attestation request
     console.log("\n[Step 1] Preparing attestation request...");
-    const data = await prepareAttestationRequest(MARKET_SLUG);
+    const data = await prepareAttestationRequest(MARKET_CONDITION_ID);
     console.log("Attestation data prepared:", JSON.stringify(data, null, 2));
 
     // 2. Submit to FDC

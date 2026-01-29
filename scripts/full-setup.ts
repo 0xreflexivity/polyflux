@@ -6,7 +6,7 @@ const MockERC20 = artifacts.require("MockERC20");
 const PredictionMarketOracle = artifacts.require("PredictionMarketOracle");
 const PredictionDerivatives = artifacts.require("PredictionDerivatives");
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+const CLOB_API = "https://clob.polymarket.com";
 
 async function main() {
     console.log("═══════════════════════════════════════════════════════════");
@@ -42,33 +42,30 @@ async function main() {
     // 4. Fetch real Polymarket data and set up oracle
     console.log("4. Fetching Polymarket data and setting up oracle...");
     const response = await fetch(
-        `${GAMMA_API}/markets?limit=10&active=true&closed=false&order=volume24hr&ascending=false`
+        `${CLOB_API}/sampling-markets?limit=10`
     );
-    const markets = await response.json();
+    const apiResponse = await response.json();
+    const markets = apiResponse.data || [];
 
     let setupCount = 0;
     for (const market of markets) {
-        if (!market.outcomePrices || !market.slug) continue;
+        if (!market.tokens || market.tokens.length < 2 || !market.market_slug) continue;
 
         try {
-            const prices = JSON.parse(market.outcomePrices);
-            const yesPrice = Math.round(parseFloat(prices[0]) * 10000); // Convert to basis points
-            const noPrice = Math.round(parseFloat(prices[1]) * 10000);
+            const yesPrice = Math.round(market.tokens[0].price * 10000); // Convert to basis points
+            const noPrice = Math.round(market.tokens[1].price * 10000);
 
             // Skip if prices don't add up properly
             if (yesPrice + noPrice < 9500 || yesPrice + noPrice > 10500) continue;
 
-            const volume = Math.round((market.volume24hr || 0) * 1e6);
-            const liquidity = Math.round((market.liquidityNum || 10000) * 1e6);
+            const volume = 1000000; // Placeholder since CLOB doesn't have per-market volume
+            const liquidity = 1000000; // Placeholder
 
-            // Skip if liquidity too low
-            if (liquidity < 1000e6) continue;
-
-            console.log(`   Setting up: ${market.slug.slice(0, 40)}...`);
+            console.log(`   Setting up: ${market.market_slug.slice(0, 40)}...`);
             console.log(`   YES: ${(yesPrice / 100).toFixed(1)}% | NO: ${(noPrice / 100).toFixed(1)}%`);
 
             await oracle.setMarketDataForTesting(
-                market.slug,
+                market.market_slug,
                 market.question.slice(0, 100),
                 yesPrice,
                 noPrice,

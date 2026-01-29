@@ -4,7 +4,7 @@ import { parseUnits, formatUnits } from 'viem'
 import { motion, AnimatePresence } from 'framer-motion'
 import { config, coston2, CONTRACTS, DERIVATIVES_ABI, ERC20_ABI, ORACLE_ABI } from './wagmi'
 
-const GAMMA_API = '/api/polymarket'
+const CLOB_API = '/api/polymarket'
 
 function App() {
   const { address, isConnected, chain } = useAccount()
@@ -149,28 +149,27 @@ function App() {
       // Get unique market IDs
       const marketIds = [...new Set(openPositions.map(p => p.marketId))]
 
-      // Fetch live prices from Polymarket API
+      // Fetch live prices from Polymarket CLOB API
+      // Note: CLOB API doesn't support slug filtering, so we fetch all sampling markets
+      // and match by slug. For production, store condition_id with positions.
       const priceMap = {}
-      await Promise.all(
-        marketIds.map(async (marketId) => {
-          try {
-            const res = await fetch(`${GAMMA_API}/markets?slug=${marketId}`)
-            if (res.ok) {
-              const data = await res.json()
-              if (data && data[0] && data[0].outcomePrices) {
-                const prices = JSON.parse(data[0].outcomePrices)
-                // Convert to basis points (0-10000)
-                priceMap[marketId] = {
-                  yesPrice: Math.round(parseFloat(prices[0]) * 10000),
-                  noPrice: Math.round(parseFloat(prices[1]) * 10000),
-                }
+      try {
+        const res = await fetch(`${CLOB_API}/sampling-markets?limit=100`)
+        if (res.ok) {
+          const response = await res.json()
+          const markets = response.data || []
+          for (const m of markets) {
+            if (marketIds.includes(m.market_slug) && m.tokens && m.tokens.length >= 2) {
+              priceMap[m.market_slug] = {
+                yesPrice: Math.round((m.tokens[0]?.price || 0) * 10000),
+                noPrice: Math.round((m.tokens[1]?.price || 0) * 10000),
               }
             }
-          } catch (e) {
-            console.log('Price fetch error for', marketId, e)
           }
-        })
-      )
+        }
+      } catch (e) {
+        console.log('Price fetch error', e)
+      }
 
       // Calculate live P&L for each position
       const positionsWithPnL = openPositions.map(position => {
@@ -250,27 +249,27 @@ function App() {
     setLoading(true)
     setError(null)
     try {
-      let url = `${GAMMA_API}/markets?limit=20&active=true&closed=false`
-      if (activeTab === 'trending') url += '&order=volume24hr&ascending=false'
-      else if (activeTab === 'new') url += '&order=createdAt&ascending=false'
-      else if (activeTab === 'closing') url += '&order=endDate&ascending=true'
+      // CLOB API: use sampling-markets for active markets
+      const url = `${CLOB_API}/sampling-markets?limit=20`
 
       const res = await fetch(url)
       if (!res.ok) throw new Error('Failed to fetch')
-      const data = await res.json()
+      const response = await res.json()
+      
+      // CLOB API returns {data: [...], count, next_cursor}
+      const data = response.data || response || []
 
-      setMarkets(data.filter(m => m.outcomePrices && m.question).map(m => {
-        const prices = JSON.parse(m.outcomePrices || '["0","0"]')
+      setMarkets(data.filter(m => m.tokens && m.tokens.length >= 2 && m.question).map(m => {
         return {
-          id: m.id,
-          slug: m.slug,
+          id: m.condition_id,
+          slug: m.market_slug,
           question: m.question,
           image: m.image,
-          yesPrice: parseFloat(prices[0]) * 100,
-          noPrice: parseFloat(prices[1]) * 100,
-          volume24h: m.volume24hr || 0,
-          liquidity: m.liquidityNum || 0,
-          endDate: m.endDate,
+          yesPrice: (m.tokens[0]?.price || 0) * 100,
+          noPrice: (m.tokens[1]?.price || 0) * 100,
+          volume24h: 0, // CLOB API doesn't have per-market volume
+          liquidity: 0, // CLOB API doesn't have per-market liquidity
+          endDate: m.end_date_iso,
         }
       }))
     } catch (err) {

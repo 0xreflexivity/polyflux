@@ -7,7 +7,7 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api/polymarket': {
-        target: 'https://gamma-api.polymarket.com',
+        target: 'https://clob.polymarket.com',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api\/polymarket/, ''),
       },

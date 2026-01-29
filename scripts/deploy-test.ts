@@ -4,7 +4,7 @@ const MockERC20 = artifacts.require("MockERC20");
 const PredictionMarketOracle = artifacts.require("PredictionMarketOracle");
 const PredictionDerivatives = artifacts.require("PredictionDerivatives");
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+const CLOB_API = "https://clob.polymarket.com";
 
 async function main() {
     console.log("═══════════════════════════════════════════════════════════");
@@ -38,7 +38,7 @@ async function main() {
     // 4. Fetch real Polymarket data
     console.log("4️⃣  Fetching live Polymarket markets...");
     const response = await fetch(
-        `${GAMMA_API}/markets?limit=5&active=true&closed=false&order=volume24hr&ascending=false`
+        `${CLOB_API}/markets?limit=5&active=true&closed=false&order=volume24hr&ascending=false`
     );
     const markets = await response.json();
 
