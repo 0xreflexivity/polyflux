@@ -14,7 +14,7 @@ const { WEB2JSON_VERIFIER_URL_TESTNET, VERIFIER_API_KEY_TESTNET, COSTON2_DA_LAYE
 
 // ============ POLYMARKET CONFIGURATION ============
 
-const POLYMARKET_API = "https://gamma-api.polymarket.com";
+const POLYMARKET_API = "https://clob.polymarket.com";
 
 // Default market for testing
 const defaultMarketSlug = "will-bitcoin-reach-150k-in-january-2026";
@@ -26,7 +26,7 @@ const defaultMarketSlug = "will-bitcoin-reach-150k-in-january-2026";
  * {
  *   "slug": "market-slug",
  *   "question": "Will X happen?",
- *   "outcomePrices": "[\"0.45\", \"0.55\"]",
+ *   "lastTradePrice": 0.45,
  *   "volume24hr": 123456.78,
  *   "liquidityNum": 50000.00
  * }
@@ -35,27 +35,19 @@ const defaultMarketSlug = "will-bitcoin-reach-150k-in-january-2026";
  * {
  *   "marketId": "market-slug",
  *   "question": "Will X happen?",
- *   "yesPrice": 4500,      // basis points (0.45 * 10000)
- *   "noPrice": 5500,       // basis points
- *   "volume": 123456780000, // scaled by 1e6
- *   "liquidity": 50000000000 // scaled by 1e6
+ *   "yesPrice": "4500",
+ *   "noPrice": "5500",
+ *   "volume": "123456780000",
+ *   "liquidity": "50000000000"
  * }
+ *
+ * Note: Uses lastTradePrice instead of outcomePrices to avoid fromjson.
+ * Uses tostring|split(".")|.[0] to truncate decimals (floor not supported).
  */
 function buildPostProcessJq(): string {
-    return `
-        . |
-        if type == "array" then .[0] else . end |
-        {
-            marketId: .slug,
-            question: (.question | if length > 100 then .[:100] else . end),
-            yesPrice: ((.outcomePrices | fromjson)[0] | tonumber * 10000 | floor),
-            noPrice: ((.outcomePrices | fromjson)[1] | tonumber * 10000 | floor),
-            volume: ((.volume24hr // 0) * 1000000 | floor),
-            liquidity: ((.liquidityNum // 0) * 1000000 | floor)
-        }
-    `
-        .replace(/\s+/g, " ")
-        .trim();
+    // Note: fromjson, tonumber, floor are NOT supported by the FDC verifier
+    // Use tostring | split(".") | .[0] to truncate decimals
+    return `.[0] | {marketId: .slug, question: .question[0:100], yesPrice: ((.lastTradePrice * 10000) | tostring | split(".") | .[0]), noPrice: ((10000 - (.lastTradePrice * 10000)) | tostring | split(".") | .[0]), volume: ((.volume24hr * 1000000) | tostring | split(".") | .[0]), liquidity: ((.liquidityNum * 1000000) | tostring | split(".") | .[0])}`;
 }
 
 // ABI signature for the MarketDTO struct
@@ -63,7 +55,7 @@ const abiSignature = `{"components": [{"internalType": "string", "name": "market
 
 // Configuration constants
 const attestationTypeBase = "Web2Json";
-const sourceIdBase = "testIgnite";
+const sourceIdBase = "PublicWeb2";  // Unrestricted on testnet - allows any public URL
 const verifierUrlBase = WEB2JSON_VERIFIER_URL_TESTNET;
 
 // ============ ATTESTATION FUNCTIONS ============
@@ -75,7 +67,7 @@ async function prepareAttestationRequest(marketSlug: string) {
     const requestBody = {
         url: apiUrl,
         httpMethod: "GET",
-        headers: "{}",
+        headers: JSON.stringify({ "User-Agent": "POLYFLUX/1.0" }),
         queryParams: "{}",
         body: "{}",
         postProcessJq: postProcessJq,

@@ -86,7 +86,8 @@ Polymarket API → Web2Json Verifier → FdcHub → Voting Round → DA Layer �
 
 ## Notes
 
-- The keeper uses `testIgnite` source ID for Web2Json attestations
+- The keeper uses `PublicWeb2` source ID for Web2Json attestations (unrestricted on testnet)
 - Markets with < $1000 liquidity are skipped
 - Updates are skipped if market data is fresh (< 1 hour old)
 - The keeper handles rate limiting automatically
+- JQ filter avoids unsupported functions (fromjson, tonumber, floor) by using `tostring | split(".") | .[0]` for decimal truncation

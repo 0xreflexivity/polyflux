@@ -1,4 +1,4 @@
-import hre, { ethers } from "hardhat";
+import hre, { web3 } from "hardhat";
 import { toUtf8HexString, sleep } from "./core";
 import { getContractAddressByName, getFlareSystemsManager, getFdcHub, getRelay, getFdcVerification } from "./getters";
 import {
@@ -56,7 +56,7 @@ export async function prepareAttestationRequestBase(
 
 export async function calculateRoundId(transaction: any) {
     const blockNumber = transaction.receipt.blockNumber;
-    const block = await ethers.provider.getBlock(blockNumber);
+    const block = await web3.eth.getBlock(blockNumber);
     const blockTimestamp = BigInt(block.timestamp);
 
     const flareSystemsManager: IFlareSystemsManagerInstance = await getFlareSystemsManager();

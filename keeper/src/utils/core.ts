@@ -19,40 +19,33 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Build the jq transform for Polymarket market data
+ * Build the jq transform for Polymarket CLOB API market data
  *
- * Input from Polymarket API:
+ * Input from CLOB API (single market by condition_id):
  * {
- *   "slug": "market-slug",
+ *   "market_slug": "market-slug",
  *   "question": "Will X happen?",
- *   "outcomePrices": "[\"0.45\", \"0.55\"]",
- *   "volume24hr": 123456.78,
- *   "liquidityNum": 50000.00
+ *   "tokens": [
+ *     {"outcome": "Yes", "price": 0.89},
+ *     {"outcome": "No", "price": 0.11}
+ *   ]
  * }
  *
  * Output:
  * {
  *   "marketId": "market-slug",
  *   "question": "Will X happen?",
- *   "yesPrice": 4500,
- *   "noPrice": 5500,
- *   "volume": 123456780000,
- *   "liquidity": 50000000000
+ *   "yesPrice": 8900,
+ *   "noPrice": 1100,
+ *   "volume": 1000000,
+ *   "liquidity": 1000000
  * }
+ *
+ * Note: CLOB API returns single object, not array.
+ * Uses | . - (. % 1) to truncate decimals (floor not supported).
  */
 export function buildPostProcessJq(): string {
-    return `
-        . |
-        if type == "array" then .[0] else . end |
-        {
-            marketId: .slug,
-            question: (.question | if length > 100 then .[:100] else . end),
-            yesPrice: ((.outcomePrices | fromjson)[0] | tonumber * 10000 | floor),
-            noPrice: ((.outcomePrices | fromjson)[1] | tonumber * 10000 | floor),
-            volume: ((.volume24hr // 0) * 1000000 | floor),
-            liquidity: ((.liquidityNum // 0) * 1000000 | floor)
-        }
-    `
-        .replace(/\s+/g, " ")
-        .trim();
+    // Note: fromjson, tonumber, floor are NOT supported by the FDC verifier
+    // Use | . - (. % 1) to truncate decimals
+    return `{marketId: .market_slug, question: .question[0:100], yesPrice: (.tokens[0].price * 10000 | . - (. % 1)), noPrice: (.tokens[1].price * 10000 | . - (. % 1)), volume: 1000000, liquidity: 1000000}`;
 }

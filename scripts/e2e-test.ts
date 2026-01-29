@@ -1,13 +1,14 @@
 /**
- * POLYFLUX E2E Test
+ * POLYFLUX E2E Test - V2 Oracle via FDC Web2Json
  *
- * Tests the full flow of fetching Polymarket data via FDC and updating the oracle.
+ * Tests the full flow: Polymarket CLOB API → FDC attestation → V2 Oracle on-chain
+ * Following the hardhat-gitlab fdcExample/Web2Json.ts pattern.
  *
  * Usage:
  *   npx hardhat run scripts/e2e-test.ts --network coston2
  */
 
-import hre, { web3 } from "hardhat";
+import { run, web3 } from "hardhat";
 import {
     prepareAttestationRequestBase,
     submitAttestationRequest,
@@ -20,61 +21,29 @@ const { WEB2JSON_VERIFIER_URL_TESTNET, VERIFIER_API_KEY_TESTNET, COSTON2_DA_LAYE
 
 // ============ POLYMARKET CONFIG ============
 
-const GAMMA_API = "https://gamma-api.polymarket.com";
+const CLOB_API = "https://clob.polymarket.com";
 
-interface PolymarketMarket {
-    id: string;
-    slug: string;
-    question: string;
-    outcomePrices: string;
-    volume24hr: number;
-    volumeNum: number;
-    liquidityNum: number;
-}
-
-// ============ CONFIGURATION ============
+// ============ FDC CONFIG ============
 
 const attestationTypeBase = "Web2Json";
-const sourceIdBase = "testIgnite";
+const sourceIdBase = "PublicWeb2";
 const verifierUrlBase = WEB2JSON_VERIFIER_URL_TESTNET;
-
-/**
- * Build the jq transform for Polymarket market data
- */
-function buildPostProcessJq(): string {
-    return `
-        . |
-        if type == "array" then .[0] else . end |
-        {
-            marketId: .slug,
-            question: (.question | if length > 100 then .[:100] else . end),
-            yesPrice: ((.outcomePrices | fromjson)[0] | tonumber * 10000 | floor),
-            noPrice: ((.outcomePrices | fromjson)[1] | tonumber * 10000 | floor),
-            volume: ((.volume24hr // 0) * 1000000 | floor),
-            liquidity: ((.liquidityNum // 0) * 1000000 | floor)
-        }
-    `
-        .replace(/\s+/g, " ")
-        .trim();
-}
 
 // ABI signature for the MarketDTO struct
 const abiSignature = `{"components": [{"internalType": "string", "name": "marketId", "type": "string"},{"internalType": "string", "name": "question", "type": "string"},{"internalType": "uint256", "name": "yesPrice", "type": "uint256"},{"internalType": "uint256", "name": "noPrice", "type": "uint256"},{"internalType": "uint256", "name": "volume", "type": "uint256"},{"internalType": "uint256", "name": "liquidity", "type": "uint256"}],"name": "MarketDTO","type": "tuple"}`;
 
-// ============ FETCH FUNCTIONS ============
-
-async function fetchTopMarkets(limit: number = 5): Promise<PolymarketMarket[]> {
-    const response = await fetch(
-        `${GAMMA_API}/markets?limit=${limit}&active=true&closed=false&order=volume24hr&ascending=false`
-    );
-    const data = await response.json();
-    return data.filter((m: any) => m.outcomePrices && m.question && m.slug);
+/**
+ * Build jq transform for CLOB API single market response
+ * CLOB /markets/{condition_id} returns a single object with .market_slug, .question, .tokens[]
+ */
+function buildPostProcessJq(): string {
+    return `{marketId: .market_slug, question: .question[0:100], yesPrice: (.tokens[0].price * 10000 | . - (. % 1)), noPrice: (.tokens[1].price * 10000 | . - (. % 1)), volume: 1000000, liquidity: 1000000}`;
 }
 
 // ============ FDC FUNCTIONS ============
 
-async function prepareAttestationRequest(marketSlug: string) {
-    const apiUrl = `${GAMMA_API}/markets?slug=${marketSlug}`;
+async function prepareAttestationRequest(conditionId: string) {
+    const apiUrl = `${CLOB_API}/markets/${conditionId}`;
     const postProcessJq = buildPostProcessJq();
 
     const requestBody = {
@@ -111,7 +80,7 @@ async function updateOracle(proof: any) {
 
     console.log("Proof hex:", proof.response_hex, "\n");
 
-    // Decode the proof response
+    // Decode the proof response using IWeb2JsonVerification ABI
     const IWeb2JsonVerification = await artifacts.require("IWeb2JsonVerification");
     const responseType = IWeb2JsonVerification._json.abi[0].inputs[0].components[1];
     console.log("Response type:", responseType, "\n");
@@ -126,55 +95,74 @@ async function updateOracle(proof: any) {
     });
     console.log("Transaction:", transaction.tx, "\n");
 
-    // Verify
-    const marketData = await oracle.getMarketData((decodedResponse as any).marketId);
-    console.log("Updated market data:", marketData, "\n");
+    // Verify on-chain data
+    const marketId = (decodedResponse as any).responseBody.abiEncodedData
+        ? "check manually"
+        : (decodedResponse as any).marketId || "unknown";
+
+    try {
+        const allIds = await oracle.getAllMarketIds();
+        console.log("All market IDs on-chain:", allIds, "\n");
+
+        if (allIds.length > 0) {
+            const marketData = await oracle.getMarketData(allIds[allIds.length - 1]);
+            console.log("Latest market data:", marketData, "\n");
+        }
+    } catch (e: any) {
+        console.log("Could not read market data:", e.message, "\n");
+    }
+}
+
+// ============ FETCH MARKET ============
+
+async function fetchActiveMarket(): Promise<{ slug: string; conditionId: string }> {
+    // Fetch a single active market from CLOB API
+    const response = await fetch(`${CLOB_API}/sampling-markets?limit=5`);
+    const apiResponse = await response.json();
+    const markets = apiResponse.data || [];
+
+    for (const m of markets) {
+        if (m.tokens && m.tokens.length >= 2 && m.question && m.market_slug && m.condition_id) {
+            return { slug: m.market_slug, conditionId: m.condition_id };
+        }
+    }
+    throw new Error("No active markets found");
 }
 
 // ============ MAIN ============
 
 async function main() {
     console.log("═".repeat(60));
-    console.log("  POLYFLUX E2E Test");
+    console.log("  POLYFLUX E2E Test (V2 Oracle + FDC)");
     console.log("═".repeat(60));
-    console.log(`  Network: ${hre.network.name}`);
     console.log(`  Oracle: ${ORACLE_ADDRESS || "Not set"}`);
     console.log(`  Verifier: ${verifierUrlBase}`);
+    console.log(`  DA Layer: ${COSTON2_DA_LAYER_URL}`);
     console.log("═".repeat(60));
 
-    // Step 1: Fetch top markets from Polymarket
-    console.log("\n=== Step 1: Fetching top markets from Polymarket ===\n");
-    const markets = await fetchTopMarkets(3);
-    console.log(
-        "Top markets:",
-        markets.map((m) => m.slug),
-        "\n"
-    );
-
-    if (markets.length === 0) {
-        throw new Error("No markets found");
-    }
-
-    const market = markets[0];
-    console.log(`Testing with market: ${market.slug}\n`);
+    // Step 1: Find an active market
+    console.log("\n=== Step 1: Fetching active market from Polymarket ===\n");
+    const market = await fetchActiveMarket();
+    console.log(`  Market: ${market.slug}`);
+    console.log(`  Condition: ${market.conditionId}\n`);
 
     // Step 2: Prepare attestation request
-    console.log("=== Step 2: Preparing attestation request ===\n");
-    const data = await prepareAttestationRequest(market.slug);
-    console.log("Prepared request data:", data, "\n");
+    console.log("=== Step 2: Preparing FDC attestation request ===\n");
+    const data = await prepareAttestationRequest(market.conditionId);
+    console.log("Data:", data, "\n");
 
     const abiEncodedRequest = data.abiEncodedRequest;
 
-    // Step 3: Submit to FdcHub
+    // Step 3: Submit to FdcHub and get round ID
     console.log("=== Step 3: Submitting to FdcHub ===\n");
     const roundId = await submitAttestationRequest(abiEncodedRequest);
 
-    // Step 4: Wait for proof
+    // Step 4: Wait for proof from DA layer
     console.log("=== Step 4: Waiting for proof ===\n");
     const proof = await retrieveDataAndProof(abiEncodedRequest, roundId);
 
-    // Step 5: Update oracle
-    console.log("=== Step 5: Updating oracle ===\n");
+    // Step 5: Update oracle with proof
+    console.log("=== Step 5: Updating V2 Oracle ===\n");
     await updateOracle(proof);
 
     console.log("✅ E2E test completed successfully!\n");

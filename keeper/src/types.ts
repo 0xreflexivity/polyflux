@@ -36,15 +36,30 @@ export interface MarketData {
 }
 
 export interface PolymarketApiMarket {
-    id: string;
-    slug: string;
+    condition_id: string;
+    market_slug: string;
     question: string;
-    outcomePrices: string;
-    volume24hr: number;
-    volumeNum: number;
-    liquidityNum: number;
+    tokens: Array<{
+        token_id: string;
+        outcome: string;
+        price: number;
+        winner: boolean;
+    }>;
     active: boolean;
     closed: boolean;
+    // Legacy fields for gamma API compatibility
+    slug?: string;
+    outcomePrices?: string;
+    volume24hr?: number;
+    volumeNum?: number;
+    liquidityNum?: number;
+}
+
+export interface ClobApiResponse {
+    count: number;
+    data: PolymarketApiMarket[];
+    limit: number;
+    next_cursor: string;
 }
 
 export interface AttestationProof {

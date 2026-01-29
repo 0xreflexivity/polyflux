@@ -18,7 +18,7 @@
 import { ethers } from "ethers";
 import "dotenv/config";
 
-import { Config, MarketData, PolymarketApiMarket, MARKET_DTO_ABI_SIGNATURE } from "./types";
+import { Config, MarketData, PolymarketApiMarket, ClobApiResponse, MARKET_DTO_ABI_SIGNATURE } from "./types";
 import { sleep, buildPostProcessJq } from "./utils/core";
 import {
     prepareAttestationRequestBase,
@@ -54,10 +54,10 @@ const config: Config = {
 
     // FDC Attestation Config
     attestationType: "Web2Json",
-    sourceId: "testIgnite",
+    sourceId: "PublicWeb2",  // Unrestricted on testnet - allows any public URL
 
     // Polymarket
-    polymarketApi: "https://gamma-api.polymarket.com",
+    polymarketApi: "https://clob.polymarket.com",
 
     // Timing
     updateIntervalMs: parseInt(process.env.UPDATE_INTERVAL_MS || "600000"), // 10 min
@@ -127,41 +127,39 @@ class FdcKeeper {
 
     /**
      * Fetch markets that are resolved on Polymarket but not on-chain
+     * Returns array of {slug, conditionId} for FDC requests
      */
-    async fetchMarketsNeedingResolution(): Promise<string[]> {
+    async fetchMarketsNeedingResolution(): Promise<Array<{ slug: string; conditionId: string }>> {
         try {
-            // Fetch recently closed/resolved markets from Polymarket
+            // Fetch markets from CLOB API
             const response = await fetch(
-                `${config.polymarketApi}/markets?limit=50&closed=true&order=endDate&ascending=false`
+                `${config.polymarketApi}/markets?limit=50`
             );
-            const markets = (await response.json()) as PolymarketApiMarket[];
+            const apiResponse = (await response.json()) as ClobApiResponse;
+            const markets = apiResponse.data || [];
 
-            const needsResolution: string[] = [];
+            const needsResolution: Array<{ slug: string; conditionId: string }> = [];
 
             for (const market of markets) {
-                if (!market.slug || !market.outcomePrices) continue;
+                if (!market.market_slug || !market.condition_id || !market.tokens || market.tokens.length < 2) continue;
+                if (!market.closed) continue; // Only check closed markets
 
-                // Parse prices to check if resolved (one side at 100%)
+                // Check if resolved (one side at 100%)
+                const yesPrice = market.tokens[0].price * 10000;
+                const noPrice = market.tokens[1].price * 10000;
+
+                // Market is resolved if one price is >= 99%
+                const isResolvedOnPolymarket = yesPrice >= 9900 || noPrice >= 9900;
+                if (!isResolvedOnPolymarket) continue;
+
+                // Check if we have this market and if it's already resolved on-chain
                 try {
-                    const prices = JSON.parse(market.outcomePrices) as string[];
-                    const yesPrice = parseFloat(prices[0]) * 10000;
-                    const noPrice = parseFloat(prices[1]) * 10000;
-
-                    // Market is resolved if one price is >= 99%
-                    const isResolvedOnPolymarket = yesPrice >= 9900 || noPrice >= 9900;
-                    if (!isResolvedOnPolymarket) continue;
-
-                    // Check if we have this market and if it's already resolved on-chain
-                    try {
-                        const marketData = await this.oracle.getMarketData(market.slug);
-                        if (!marketData.resolved) {
-                            needsResolution.push(market.slug);
-                        }
-                    } catch {
-                        // Market doesn't exist on-chain, skip
-                        continue;
+                    const marketData = await this.oracle.getMarketData(market.market_slug);
+                    if (!marketData.resolved) {
+                        needsResolution.push({ slug: market.market_slug, conditionId: market.condition_id });
                     }
                 } catch {
+                    // Market doesn't exist on-chain, skip
                     continue;
                 }
             }
@@ -176,12 +174,12 @@ class FdcKeeper {
     /**
      * Resolve a market via FDC proof
      */
-    async resolveMarketViaFdc(marketSlug: string): Promise<boolean> {
-        console.log(`  🏁 Resolving: ${marketSlug}`);
+    async resolveMarketViaFdc(market: { slug: string; conditionId: string }): Promise<boolean> {
+        console.log(`  🏁 Resolving: ${market.slug}`);
 
         try {
-            // 1. Prepare request (same as update, but we'll use it for resolution)
-            const { abiEncodedRequest } = await this.prepareAttestationRequest(marketSlug);
+            // 1. Prepare request using condition_id
+            const { abiEncodedRequest } = await this.prepareAttestationRequest(market.conditionId);
             console.log(`     Prepared attestation request`);
 
             // 2. Submit to FdcHub
@@ -214,28 +212,31 @@ class FdcKeeper {
 
     /**
      * Fetch markets from Polymarket that need updates
+     * Returns array of {slug, conditionId} for FDC requests
      */
-    async fetchMarketsNeedingUpdate(): Promise<string[]> {
+    async fetchMarketsNeedingUpdate(): Promise<Array<{ slug: string; conditionId: string }>> {
         try {
+            // Use sampling-markets endpoint for active markets
             const response = await fetch(
-                `${config.polymarketApi}/markets?limit=${config.maxMarketsPerCycle}&active=true&closed=false&order=volume24hr&ascending=false`
+                `${config.polymarketApi}/sampling-markets?limit=${config.maxMarketsPerCycle}`
             );
-            const markets = (await response.json()) as PolymarketApiMarket[];
+            const apiResponse = (await response.json()) as ClobApiResponse;
+            const markets = apiResponse.data || [];
 
-            const needsUpdate: string[] = [];
+            const needsUpdate: Array<{ slug: string; conditionId: string }> = [];
 
             for (const market of markets) {
-                if (!market.slug || !market.outcomePrices) continue;
-                if ((market.liquidityNum || 0) < 1000) continue; // Min $1000 liquidity
+                if (!market.market_slug || !market.condition_id || !market.tokens || market.tokens.length < 2) continue;
+                if (!market.active || market.closed) continue; // Only active, non-closed markets
 
                 try {
-                    const isFresh = await this.oracle.isMarketDataFresh(market.slug, config.maxStalenessSeconds);
+                    const isFresh = await this.oracle.isMarketDataFresh(market.market_slug, config.maxStalenessSeconds);
                     if (!isFresh) {
-                        needsUpdate.push(market.slug);
+                        needsUpdate.push({ slug: market.market_slug, conditionId: market.condition_id });
                     }
                 } catch {
                     // Market doesn't exist yet
-                    needsUpdate.push(market.slug);
+                    needsUpdate.push({ slug: market.market_slug, conditionId: market.condition_id });
                 }
             }
 
@@ -248,9 +249,11 @@ class FdcKeeper {
 
     /**
      * Prepare attestation request via Web2Json verifier
+     * Uses condition_id to fetch single market from CLOB API
      */
-    async prepareAttestationRequest(marketSlug: string): Promise<{ abiEncodedRequest: string }> {
-        const apiUrl = `${config.polymarketApi}/markets?slug=${marketSlug}`;
+    async prepareAttestationRequest(conditionId: string): Promise<{ abiEncodedRequest: string }> {
+        // CLOB API: /markets/{condition_id} returns single market object
+        const apiUrl = `${config.polymarketApi}/markets/${conditionId}`;
 
         const requestBody = {
             url: apiUrl,
@@ -276,12 +279,12 @@ class FdcKeeper {
     /**
      * Update a single market via FDC
      */
-    async updateMarketViaFdc(marketSlug: string): Promise<boolean> {
-        console.log(`  📡 ${marketSlug}`);
+    async updateMarketViaFdc(market: { slug: string; conditionId: string }): Promise<boolean> {
+        console.log(`  📡 ${market.slug}`);
 
         try {
-            // 1. Prepare request
-            const { abiEncodedRequest } = await this.prepareAttestationRequest(marketSlug);
+            // 1. Prepare request using condition_id
+            const { abiEncodedRequest } = await this.prepareAttestationRequest(market.conditionId);
             console.log(`     Prepared attestation request`);
 
             // 2. Submit to FdcHub
@@ -328,8 +331,8 @@ class FdcKeeper {
             let resolved = 0;
             let resolveFailed = 0;
 
-            for (const slug of marketsToResolve.slice(0, config.maxMarketsPerCycle)) {
-                const success = await this.resolveMarketViaFdc(slug);
+            for (const market of marketsToResolve.slice(0, config.maxMarketsPerCycle)) {
+                const success = await this.resolveMarketViaFdc(market);
                 if (success) resolved++;
                 else resolveFailed++;
 
@@ -351,8 +354,8 @@ class FdcKeeper {
             let updated = 0;
             let failed = 0;
 
-            for (const slug of marketsToUpdate.slice(0, config.maxMarketsPerCycle)) {
-                const success = await this.updateMarketViaFdc(slug);
+            for (const market of marketsToUpdate.slice(0, config.maxMarketsPerCycle)) {
+                const success = await this.updateMarketViaFdc(market);
                 if (success) updated++;
                 else failed++;
 
