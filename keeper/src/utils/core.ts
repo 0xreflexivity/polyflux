@@ -35,17 +35,20 @@ export function sleep(ms: number): Promise<void> {
  * {
  *   "marketId": "market-slug",
  *   "question": "Will X happen?",
- *   "yesPrice": 8900,
- *   "noPrice": 1100,
+ *   "yesPrice": 9000,  // Rounded to nearest 1000 bps (10%)
+ *   "noPrice": 1000,
  *   "volume": 1000000,
  *   "liquidity": 1000000
  * }
  *
  * Note: CLOB API returns single object, not array.
- * Uses | . - (. % 1) to truncate decimals (floor not supported).
+ * Rounds prices to nearest 1000 bps (10%) to ensure DA layer consensus
+ * even when different nodes query the API at slightly different times.
  */
 export function buildPostProcessJq(): string {
     // Note: fromjson, tonumber, floor are NOT supported by the FDC verifier
-    // Use | . - (. % 1) to truncate decimals
-    return `{marketId: .market_slug, question: .question[0:100], yesPrice: (.tokens[0].price * 10000 | . - (. % 1)), noPrice: (.tokens[1].price * 10000 | . - (. % 1)), volume: 1000000, liquidity: 1000000}`;
+    // Round to nearest 1000 bps (10%) for DA layer consensus:
+    // Formula: (price * 10000 + 500) - ((price * 10000 + 500) % 1000)
+    // This ensures slight price fluctuations don't break consensus
+    return `{marketId: .market_slug, question: .question[0:100], yesPrice: ((.tokens[0].price * 10000 + 500) | . - (. % 1000)), noPrice: ((.tokens[1].price * 10000 + 500) | . - (. % 1000)), volume: 1000000, liquidity: 1000000}`;
 }

@@ -265,7 +265,7 @@ class FdcKeeper {
             abiSignature: MARKET_DTO_ABI_SIGNATURE,
         };
 
-        const url = `${config.web2JsonVerifierUrl}Web2Json/prepareRequest`;
+        const url = `${config.web2JsonVerifierUrl}/Web2Json/prepareRequest`;
 
         return await prepareAttestationRequestBase(
             url,

@@ -35,19 +35,20 @@ const defaultMarketSlug = "will-bitcoin-reach-150k-in-january-2026";
  * {
  *   "marketId": "market-slug",
  *   "question": "Will X happen?",
- *   "yesPrice": "4500",
- *   "noPrice": "5500",
+ *   "yesPrice": "5000",  // Rounded to nearest 1000 bps (10%)
+ *   "noPrice": "5000",
  *   "volume": "123456780000",
  *   "liquidity": "50000000000"
  * }
  *
  * Note: Uses lastTradePrice instead of outcomePrices to avoid fromjson.
- * Uses tostring|split(".")|.[0] to truncate decimals (floor not supported).
+ * Rounds prices to nearest 1000 bps (10%) to ensure DA layer consensus
+ * even when different nodes query the API at slightly different times.
  */
 function buildPostProcessJq(): string {
     // Note: fromjson, tonumber, floor are NOT supported by the FDC verifier
-    // Use tostring | split(".") | .[0] to truncate decimals
-    return `.[0] | {marketId: .slug, question: .question[0:100], yesPrice: ((.lastTradePrice * 10000) | tostring | split(".") | .[0]), noPrice: ((10000 - (.lastTradePrice * 10000)) | tostring | split(".") | .[0]), volume: ((.volume24hr * 1000000) | tostring | split(".") | .[0]), liquidity: ((.liquidityNum * 1000000) | tostring | split(".") | .[0])}`;
+    // Round to nearest 1000 bps for DA consensus: (price * 10000 + 500) - ((price * 10000 + 500) % 1000)
+    return `.[0] | {marketId: .slug, question: .question[0:100], yesPrice: (((.lastTradePrice * 10000 + 500) - ((.lastTradePrice * 10000 + 500) % 1000)) | tostring | split(".") | .[0]), noPrice: (((10000 - .lastTradePrice * 10000 + 500) - ((10000 - .lastTradePrice * 10000 + 500) % 1000)) | tostring | split(".") | .[0]), volume: ((.volume24hr * 1000000) | tostring | split(".") | .[0]), liquidity: ((.liquidityNum * 1000000) | tostring | split(".") | .[0])}`;
 }
 
 // ABI signature for the MarketDTO struct
